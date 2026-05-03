@@ -65,6 +65,10 @@ Important constraints:
 - Use the current diff versus the latest Git commit to understand code and config changes.
 - Produce readable, concise language for a human researcher.
 - Write the report in this language: {{ report_language }}
+- Prioritize experiment-critical code and configuration over documentation or organizational edits.
+- Be concrete about the mechanism: name changed functions/classes, parameters, ranking logic, data flow, retrieval/evaluation stages, and outputs when evidence is available.
+- Do not summarize broad repository cleanup as the main change unless it directly changes experiment behavior.
+- If many files changed, identify the 1-3 files most likely to affect the experiment outcome and explain their specific role first.
 
 Project summary:
 {{ project_summary }}
@@ -951,7 +955,7 @@ def generate_experiment_report(
         report_language=report_language,
         result_artifacts=result_artifacts,
     )
-    prompt_template = record_prompt_path(root).read_text(encoding="utf-8")
+    prompt_template = enrich_record_prompt_template(record_prompt_path(root).read_text(encoding="utf-8"))
     if "{{ result_artifacts }}" not in prompt_template:
         prompt_template = f"{prompt_template.rstrip()}\n\nExperiment result artifacts:\n{{{{ result_artifacts }}}}\n"
     result = generate_structured_output(
@@ -985,7 +989,8 @@ def build_changed_file_snippets(root: Path, changed_files: list[str], config: di
         return "(no changed file snippets)"
     snippet_chars = int(config.get("changed_file_snippet_chars", 2200))
     snippets: list[str] = []
-    for file_name in changed_files[:12]:
+    prioritized_files = sorted(changed_files, key=changed_file_priority)
+    for file_name in prioritized_files[:12]:
         path = root / file_name
         if not path.exists() or not path.is_file():
             continue
@@ -997,6 +1002,40 @@ def build_changed_file_snippets(root: Path, changed_files: list[str], config: di
             continue
         snippets.append(f"### {file_name}\n{excerpt}\n")
     return "\n".join(snippets) if snippets else "(changed files are not readable text files)"
+
+
+def changed_file_priority(file_name: str) -> tuple[int, str]:
+    normalized = file_name.replace("\\", "/").lower()
+    suffix = Path(normalized).suffix
+    if normalized.startswith(("src/", "expline/", "lib/", "app/", "scripts/")) and suffix in {".py", ".sh"}:
+        return (0, normalized)
+    if normalized in {"main.py", "train.py", "eval.py", "evaluate.py"} or normalized.endswith(("/main.py", "/train.py", "/eval.py", "/evaluate.py")):
+        return (1, normalized)
+    if suffix in {".yaml", ".yml", ".json", ".toml", ".ini", ".cfg"}:
+        return (2, normalized)
+    if suffix in {".py", ".sh", ".ps1", ".bat"}:
+        return (3, normalized)
+    if normalized.startswith(("docs/", "doc/")) or suffix == ".md":
+        return (8, normalized)
+    return (5, normalized)
+
+
+def enrich_record_prompt_template(prompt_template: str) -> str:
+    marker = "Experiment-critical analysis rules:"
+    if marker in prompt_template:
+        return prompt_template
+    return (
+        prompt_template.rstrip()
+        + """
+
+Experiment-critical analysis rules:
+- Prioritize code/config changes that can alter the experiment behavior, outputs, metrics, retrieval/ranking/training/evaluation pipeline, or data selection.
+- Treat documentation, notes, refactors, and project organization as secondary unless they directly change how the experiment runs.
+- In change_description, start with the concrete experimental mechanism before mentioning docs or cleanup.
+- Name the most relevant changed files and, when visible, the specific functions/classes/parameters/control flow they changed.
+- If result artifacts are provided, connect metric/output changes back to the concrete code/config/command changes, but avoid claiming causality without evidence.
+"""
+    )
 
 
 def collect_result_artifacts(root: Path, requested_paths: list[str], config: dict[str, Any]) -> list[dict[str, Any]]:

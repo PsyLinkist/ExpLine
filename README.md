@@ -156,6 +156,14 @@ expline run --result-path outputs/latest -- python main.py
 
 可以多次使用 `--result-path`。ExpLine 会在实验结束后扫描这些路径，生成 `result_artifacts.json` 和 `result_artifacts.md`，并把结果摘要提供给 AI 写入实验报告。
 
+如果报告过多关注文档或项目组织变化，而没有写清楚实验机制，可以编辑：
+
+```text
+.expline/prompts/experiment_record_prompt.txt
+```
+
+建议在 Prompt 中明确要求 AI 优先分析会影响实验行为的代码、配置、参数、检索/训练/评估流程，并把文档整理作为次要变化处理。
+
 ### 查看实验报告
 
 ```bash
