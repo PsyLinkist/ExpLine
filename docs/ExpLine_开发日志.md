@@ -36,3 +36,5 @@
 14. 清理公开版 README，删除本地开发路径、GitHub 发布步骤和维护者说明，只保留用户安装与使用方法。
 15. 支持通过 `OPENAI_BASE_URL` 环境变量或 `expline config set openai-base-url <url>` 设置 OpenAI 兼容接口地址，并自动兼容 `/v1` 与 `/v1/responses` 两种写法。
 16. 为 `expline init` 和 `expline rescan` 增加无依赖进度条，显示项目扫描、Prompt 准备、AI 摘要生成和文件写入阶段。
+17. 为跨分支实验增加父实验 commit 对比：指定父实验时，优先生成父实验 commit 到当前 commit 的 diff，并追加当前工作区未提交 diff。
+18. 为 `expline run` 增加 `--result-path`，支持在实验结束后记录结果文件或目录摘要，并提供给 AI 生成报告。

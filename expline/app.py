@@ -28,6 +28,8 @@ DEFAULT_CONFIG = {
     "project_file_snippet_chars": 1600,
     "diff_max_chars": 18000,
     "changed_file_snippet_chars": 2200,
+    "result_context_max_files": 20,
+    "result_file_snippet_chars": 1200,
 }
 DEFAULT_PROJECT_PROMPT_TEMPLATE = """Generate a project summary for ExpLine.
 
@@ -87,6 +89,9 @@ Current diff:
 
 Changed file snippets:
 {{ changed_file_snippets }}
+
+Experiment result artifacts:
+{{ result_artifacts }}
 
 Return:
 - title
@@ -190,6 +195,9 @@ class GitSnapshot:
     dirty: bool
     diff: str
     changed_files: list[str]
+    diff_mode: str = "workspace"
+    diff_base: str | None = None
+    diff_target: str | None = None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -226,6 +234,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--parent", dest="parent_id", help="Explicit parent experiment ID")
     run_parser.add_argument("--no-ai", action="store_true", help="Skip live AI calls and use the local fallback summarizer")
     run_parser.add_argument("--report-language", help="Language to use for this experiment report, for example English or Chinese")
+    run_parser.add_argument("--result-path", action="append", default=[], help="Result file or directory to summarize after the command finishes; can be used multiple times")
     run_parser.add_argument("command_parts", nargs=argparse.REMAINDER, help="Command to execute after --")
     run_parser.set_defaults(func=cmd_run)
 
@@ -301,6 +310,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     command_text = format_command(command_parts)
     command_result = run_user_command(command_parts, root)
     parent_record = load_parent_record(root, parent_id)
+    git_snapshot = collect_parent_aware_git_snapshot(root, config, git_snapshot, parent_record)
+    result_artifacts = collect_result_artifacts(root, args.result_path, config)
     semantic_result = generate_experiment_report(
         root=root,
         config=config,
@@ -311,6 +322,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         experiment_dir=experiment_dir,
         use_ai=not args.no_ai,
         report_language=report_language,
+        result_artifacts=result_artifacts,
     )
 
     record = {
@@ -325,9 +337,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         "git_commit": git_snapshot.commit,
         "git_branch": git_snapshot.branch,
         "git_dirty": git_snapshot.dirty,
+        "git_diff_mode": git_snapshot.diff_mode,
+        "git_diff_base": git_snapshot.diff_base,
+        "git_diff_target": git_snapshot.diff_target,
         "change_types": semantic_result.output["change_types"],
         "affected_files": semantic_result.output["affected_files"],
         "affected_stages": semantic_result.output["affected_stages"],
+        "result_artifacts": result_artifacts,
         "semantic_diff_from_parent": semantic_result.output["semantic_diff_from_parent"],
         "evidence_index": semantic_result.output["evidence_index"],
         "review_hints": semantic_result.output["review_hints"],
@@ -353,6 +369,8 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     print(f"Recorded experiment {experiment_id} in {experiment_dir}")
     print(f"Editable report: {experiment_dir / 'record.md'}")
+    if result_artifacts:
+        print(f"Result artifacts: {experiment_dir / 'result_artifacts.md'}")
     if semantic_result.error:
         print(f"AI note: {semantic_result.error}")
     if command_result.returncode != 0:
@@ -661,6 +679,12 @@ def safe_read_text(path: Path) -> str | None:
         return None
 
 
+def truncate_text(text: str, max_chars: int, marker: str) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + f"\n\n[{marker}]\n"
+
+
 def fallback_project_summary(project_context: dict[str, str], report_language: str) -> dict[str, Any]:
     tree_lines = [line.strip() for line in project_context["project_tree"].splitlines() if line.strip()]
     python_files = [line for line in tree_lines if line.endswith(".py")]
@@ -765,8 +789,7 @@ def collect_git_snapshot(root: Path, config: dict[str, Any]) -> GitSnapshot:
     commit = git_output(root, ["rev-parse", "HEAD"])
     branch = git_output(root, ["branch", "--show-current"])
     diff = git_output(root, ["diff", "--no-ext-diff", "--", ".", ":(exclude).expline"])
-    if len(diff) > diff_max_chars:
-        diff = diff[:diff_max_chars] + "\n\n[diff truncated by ExpLine]\n"
+    diff = truncate_text(diff, diff_max_chars, "[diff truncated by ExpLine]")
     status_lines = git_output(root, ["status", "--porcelain"]).splitlines()
     changed_files = sorted(
         {
@@ -777,18 +800,74 @@ def collect_git_snapshot(root: Path, config: dict[str, Any]) -> GitSnapshot:
             if path and not is_internal_path(path)
         }
     )
-    return GitSnapshot(True, commit or None, branch or None, bool(changed_files), diff, changed_files)
+    return GitSnapshot(
+        True,
+        commit or None,
+        branch or None,
+        bool(changed_files),
+        diff,
+        changed_files,
+        "workspace",
+        commit or None,
+        "workspace",
+    )
+
+
+def collect_parent_aware_git_snapshot(
+    root: Path,
+    config: dict[str, Any],
+    snapshot: GitSnapshot,
+    parent_record: dict[str, Any] | None,
+) -> GitSnapshot:
+    if not snapshot.is_repo or not snapshot.commit or not parent_record:
+        return snapshot
+
+    parent_commit = parent_record.get("git_commit")
+    if not isinstance(parent_commit, str) or not parent_commit.strip() or parent_commit == snapshot.commit:
+        return snapshot
+    if run_git(root, ["cat-file", "-e", f"{parent_commit}^{{commit}}"]).returncode != 0:
+        return snapshot
+
+    diff_max_chars = int(config.get("diff_max_chars", 18000))
+    committed_diff = git_output(root, ["diff", "--no-ext-diff", f"{parent_commit}..HEAD", "--", ".", ":(exclude).expline"])
+    workspace_diff = snapshot.diff
+    diff_parts = [
+        f"[ExpLine comparison: parent experiment commit {parent_commit}..current commit {snapshot.commit}]",
+        committed_diff or "(no committed diff between parent experiment commit and current commit)",
+    ]
+    if workspace_diff:
+        diff_parts.extend(
+            [
+                "",
+                "[ExpLine additional workspace diff against current HEAD]",
+                workspace_diff,
+            ]
+        )
+    diff = truncate_text("\n".join(diff_parts), diff_max_chars, "[parent-aware diff truncated by ExpLine]")
+    committed_files = git_output(root, ["diff", "--name-only", f"{parent_commit}..HEAD", "--", ".", ":(exclude).expline"]).splitlines()
+    changed_files = sorted({normalize_status_path(path) for path in [*committed_files, *snapshot.changed_files] if path and not is_internal_path(path)})
+    return GitSnapshot(
+        True,
+        snapshot.commit,
+        snapshot.branch,
+        snapshot.dirty,
+        diff,
+        changed_files,
+        "parent_commit",
+        parent_commit,
+        snapshot.commit,
+    )
 
 
 def run_git(root: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", *args], cwd=root, text=True, capture_output=True, check=False)
+    return subprocess.run(["git", *args], cwd=root, text=True, encoding="utf-8", errors="replace", capture_output=True, check=False)
 
 
 def git_output(root: Path, args: list[str]) -> str:
     result = run_git(root, args)
     if result.returncode != 0:
         return ""
-    return result.stdout.strip()
+    return (result.stdout or "").strip()
 
 
 def normalize_status_path(raw_path: str) -> str:
@@ -858,18 +937,23 @@ def generate_experiment_report(
     experiment_dir: Path,
     use_ai: bool,
     report_language: str,
+    result_artifacts: list[dict[str, Any]],
 ) -> AIResult:
     project_summary = project_summary_md_path(root).read_text(encoding="utf-8") if project_summary_md_path(root).exists() else "(project summary missing)"
     changed_file_snippets = build_changed_file_snippets(root, git_snapshot.changed_files, config)
     parent_report_text = parent_record["editable_markdown"] if parent_record and parent_record.get("editable_markdown") else "(no parent experiment)"
+    result_artifact_summary = render_result_artifacts_for_prompt(result_artifacts)
     fallback_output = fallback_experiment_report(
         command_text=command_text,
         git_snapshot=git_snapshot,
         parent_id=parent_id,
         parent_record=parent_record,
         report_language=report_language,
+        result_artifacts=result_artifacts,
     )
     prompt_template = record_prompt_path(root).read_text(encoding="utf-8")
+    if "{{ result_artifacts }}" not in prompt_template:
+        prompt_template = f"{prompt_template.rstrip()}\n\nExperiment result artifacts:\n{{{{ result_artifacts }}}}\n"
     result = generate_structured_output(
         task_name="experiment_report",
         prompt_template=prompt_template,
@@ -883,6 +967,7 @@ def generate_experiment_report(
             "changed_files": "\n".join(git_snapshot.changed_files) if git_snapshot.changed_files else "(none)",
             "diff_text": git_snapshot.diff or "(no diff available)",
             "changed_file_snippets": changed_file_snippets,
+            "result_artifacts": result_artifact_summary,
         },
         schema=EXPERIMENT_REPORT_SCHEMA,
         fallback_output=fallback_output,
@@ -914,6 +999,79 @@ def build_changed_file_snippets(root: Path, changed_files: list[str], config: di
     return "\n".join(snippets) if snippets else "(changed files are not readable text files)"
 
 
+def collect_result_artifacts(root: Path, requested_paths: list[str], config: dict[str, Any]) -> list[dict[str, Any]]:
+    artifacts: list[dict[str, Any]] = []
+    max_files = int(config.get("result_context_max_files", 20))
+    snippet_chars = int(config.get("result_file_snippet_chars", 1200))
+    root_resolved = root.resolve()
+    for requested_path in requested_paths:
+        path_text = requested_path.strip() if isinstance(requested_path, str) else ""
+        if not path_text:
+            continue
+        path = (root / path_text).resolve()
+        artifact: dict[str, Any] = {
+            "requested_path": path_text,
+            "exists": path.exists(),
+            "type": "missing",
+            "files": [],
+        }
+        try:
+            path.relative_to(root_resolved)
+        except ValueError:
+            artifact["error"] = "Path is outside the project root; skipped for safety."
+            artifacts.append(artifact)
+            continue
+        if path.is_file():
+            artifact["type"] = "file"
+            artifact["files"] = [summarize_result_file(root, path, snippet_chars)]
+        elif path.is_dir():
+            artifact["type"] = "directory"
+            files = [item for item in sorted(path.rglob("*")) if item.is_file() and not should_ignore_path(item.relative_to(root_resolved))]
+            artifact["file_count"] = len(files)
+            artifact["files"] = [summarize_result_file(root, item, snippet_chars) for item in files[:max_files]]
+            if len(files) > max_files:
+                artifact["truncated"] = True
+        artifacts.append(artifact)
+    return artifacts
+
+
+def summarize_result_file(root: Path, path: Path, snippet_chars: int) -> dict[str, Any]:
+    rel_path = path.relative_to(root.resolve()).as_posix()
+    summary: dict[str, Any] = {"path": rel_path}
+    try:
+        summary["size_bytes"] = path.stat().st_size
+    except OSError:
+        summary["size_bytes"] = None
+    if path.suffix.lower() in TEXT_FILE_SUFFIXES or path.name.lower() in {"makefile"}:
+        content = safe_read_text(path)
+        if content is not None:
+            summary["snippet"] = truncate_text(content.strip(), snippet_chars, "result snippet truncated by ExpLine")
+    return summary
+
+
+def render_result_artifacts_for_prompt(artifacts: list[dict[str, Any]]) -> str:
+    if not artifacts:
+        return "(no result artifacts requested)"
+    lines: list[str] = []
+    for artifact in artifacts:
+        lines.append(f"## {artifact.get('requested_path')}")
+        lines.append(f"- exists: {artifact.get('exists')}")
+        lines.append(f"- type: {artifact.get('type')}")
+        if artifact.get("error"):
+            lines.append(f"- error: {artifact['error']}")
+        if artifact.get("file_count") is not None:
+            lines.append(f"- file_count: {artifact['file_count']}")
+        for file_info in artifact.get("files", []):
+            lines.append(f"### {file_info.get('path')}")
+            lines.append(f"- size_bytes: {file_info.get('size_bytes')}")
+            if file_info.get("snippet"):
+                lines.append("```text")
+                lines.append(str(file_info["snippet"]))
+                lines.append("```")
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
 def fallback_experiment_report(
     *,
     command_text: str,
@@ -921,6 +1079,7 @@ def fallback_experiment_report(
     parent_id: str | None,
     parent_record: dict[str, Any] | None,
     report_language: str,
+    result_artifacts: list[dict[str, Any]],
 ) -> dict[str, Any]:
     changed_files = git_snapshot.changed_files
     if is_chinese(report_language):
@@ -948,6 +1107,8 @@ def fallback_experiment_report(
         change_types.append("code")
     if any(name.endswith((".yaml", ".yml", ".json", ".toml", ".ini")) for name in changed_files):
         change_types.append("config")
+    if result_artifacts:
+        change_types.append("result")
 
     parent_title = parent_record.get("title") if parent_record else "root"
     if is_chinese(report_language):
@@ -958,9 +1119,11 @@ def fallback_experiment_report(
         change_description += f"，变更文件为：{'、'.join(changed_files) if changed_files else '无'}。"
         evidence_index = [
             "command.txt：本次包装执行的实验命令",
-            "diff.patch：相对最新 Git commit 的工作区 diff",
+            "diff.patch：父实验 commit 到当前 commit 的 diff，或相对最新 Git commit 的工作区 diff",
             "changed_files.txt：变更文件列表",
         ]
+        if result_artifacts:
+            evidence_index.append("result_artifacts.json：用户指定的实验结果文件或目录摘要")
         review_hints = [
             "如果报告没有准确表达实验意图，可以直接编辑 record.md。",
             "请确认这些变更更偏向算法、配置，还是数据处理流程。",
@@ -973,9 +1136,11 @@ def fallback_experiment_report(
         change_description += f" with changed files: {', '.join(changed_files) if changed_files else 'none'}."
         evidence_index = [
             "command.txt: exact wrapped experiment command",
-            "diff.patch: workspace diff against latest Git commit",
+            "diff.patch: parent commit to current commit diff, or workspace diff against latest Git commit",
             "changed_files.txt: changed file list",
         ]
+        if result_artifacts:
+            evidence_index.append("result_artifacts.json: summary of user-specified result files or directories")
         review_hints = [
             "Edit record.md if the report misses important scientific intent.",
             "Confirm whether changed files reflect algorithm, config, or data pipeline changes.",
@@ -1028,6 +1193,8 @@ def write_experiment_files(
     (experiment_dir / "command.txt").write_text(command_text + "\n", encoding="utf-8")
     (experiment_dir / "diff.patch").write_text(git_snapshot.diff, encoding="utf-8")
     (experiment_dir / "changed_files.txt").write_text("\n".join(git_snapshot.changed_files) + ("\n" if git_snapshot.changed_files else ""), encoding="utf-8")
+    (experiment_dir / "result_artifacts.json").write_text(json.dumps(record.get("result_artifacts", []), ensure_ascii=False, indent=2), encoding="utf-8")
+    (experiment_dir / "result_artifacts.md").write_text(render_result_artifacts_for_prompt(record.get("result_artifacts", [])) + "\n", encoding="utf-8")
     (experiment_dir / "record.json").write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
 
     ai_markdown = render_experiment_markdown(record)
@@ -1053,6 +1220,7 @@ def render_experiment_markdown(record: dict[str, Any]) -> str:
         f"- Created At: {record['created_at']}",
         f"- Git Commit: `{record['git_commit'] or 'N/A'}`",
         f"- Git Branch: `{record['git_branch'] or 'N/A'}`",
+        f"- Git Diff Mode: {record.get('git_diff_mode', 'workspace')}",
         f"- Report Language: {record.get('report_language', 'N/A')}",
         f"- Report Backend: {report_backend_label}",
         "",
@@ -1097,6 +1265,14 @@ def render_experiment_markdown(record: dict[str, Any]) -> str:
         ]
     )
     lines.extend(f"- {item}" for item in record["evidence_index"]) if record["evidence_index"] else lines.append("- (none)")
+    lines.extend(
+        [
+            "",
+            "## Result Artifacts",
+            "",
+            render_result_artifacts_for_prompt(record.get("result_artifacts", [])),
+        ]
+    )
     lines.extend(
         [
             "",
