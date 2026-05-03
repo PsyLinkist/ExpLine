@@ -164,6 +164,8 @@ expline run --result-path outputs/latest -- python main.py
 
 建议在 Prompt 中明确要求 AI 优先分析会影响实验行为的代码、配置、参数、检索/训练/评估流程，并把文档整理作为次要变化处理。
 
+ExpLine 也会自动从完整 diff 中提取一个 `Focused code/config diff`，优先把代码、入口脚本和配置文件的真实 diff hunks 提供给 AI，减少报告停留在“哪些文件变了”的层面。
+
 ### 查看实验报告
 
 ```bash
