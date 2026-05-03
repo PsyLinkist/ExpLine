@@ -990,6 +990,9 @@ def write_experiment_files(
 
 
 def render_experiment_markdown(record: dict[str, Any]) -> str:
+    report_model = record.get("report_model")
+    report_backend = record["report_backend"]
+    report_backend_label = f"{report_backend} ({report_model})" if report_model else report_backend
     lines = [
         f"# {record['experiment_id']}",
         "",
@@ -1000,7 +1003,7 @@ def render_experiment_markdown(record: dict[str, Any]) -> str:
         f"- Git Commit: `{record['git_commit'] or 'N/A'}`",
         f"- Git Branch: `{record['git_branch'] or 'N/A'}`",
         f"- Report Language: {record.get('report_language', 'N/A')}",
-        f"- Report Backend: {record['report_backend']}{f' ({record['report_model']})' if record['report_model'] else ''}",
+        f"- Report Backend: {report_backend_label}",
         "",
         "## Summary",
         "",
