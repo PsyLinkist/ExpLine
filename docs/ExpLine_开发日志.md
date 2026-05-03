@@ -33,3 +33,4 @@
 11. 补充“先安装 ExpLine，再到其他实验项目中使用 `expline init/run`”的跨项目使用流程。
 12. 补充 GitHub 发布后的安装方式，包括 `pip install git+https://github.com/<your-name>/ExpLine.git`。
 13. 更新 `.gitignore`，排除 `.expline/`、临时验证目录、构建产物和 egg-info 目录。
+14. 清理公开版 README，删除本地开发路径、GitHub 发布步骤和维护者说明，只保留用户安装与使用方法。
