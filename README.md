@@ -198,4 +198,20 @@ $env:OPENAI_API_KEY = "your-api-key"
 expline run -- python main.py
 ```
 
+Linux / 服务器示例：
+
+```bash
+export OPENAI_API_KEY="your-api-key"
+export OPENAI_BASE_URL="https://api.key77qiqi.cn/v1"
+expline run -- python main.py
+```
+
+`OPENAI_BASE_URL` 可以填写 `/v1` 级别地址，ExpLine 会自动请求其下的 `/responses` 接口；也可以直接填写完整的 `/v1/responses` 地址。
+
+也可以把 base URL 写入当前实验项目的 `.expline/config.json`，之后不需要每次 export：
+
+```bash
+expline config set openai-base-url https://api.key77qiqi.cn/v1
+```
+
 如果没有 API Key 或 AI 调用失败，ExpLine 会自动回退到本地摘要器，保证记录流程仍然可用。

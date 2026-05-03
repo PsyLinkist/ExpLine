@@ -519,6 +519,10 @@ def normalize_config_key(key: str) -> str:
         "report-language": "default_report_language",
         "default-report-language": "default_report_language",
         "language": "default_report_language",
+        "openai-base-url": "openai_base_url",
+        "base-url": "openai_base_url",
+        "openai-model": "openai_model",
+        "model": "openai_model",
     }
     if normalized not in aliases:
         allowed = ", ".join(sorted(aliases))

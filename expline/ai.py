@@ -75,7 +75,7 @@ def generate_structured_output(
         task_name=task_name,
         schema=schema,
         timeout_seconds=timeout_seconds,
-        base_url=str(config.get("openai_base_url", OPENAI_RESPONSES_URL)),
+        base_url=resolve_openai_responses_url(config),
     )
     if response_error is not None or raw_response is None:
         return AIResult(
@@ -121,6 +121,16 @@ def generate_structured_output(
         rendered_prompt=rendered_prompt,
         raw_response=raw_response,
     )
+
+
+def resolve_openai_responses_url(config: dict[str, Any]) -> str:
+    base_url = os.getenv("OPENAI_BASE_URL") or str(config.get("openai_base_url", OPENAI_RESPONSES_URL))
+    base_url = base_url.strip()
+    if not base_url:
+        return OPENAI_RESPONSES_URL
+    if base_url.rstrip("/").endswith("/responses"):
+        return base_url.rstrip("/")
+    return f"{base_url.rstrip('/')}/responses"
 
 
 def render_template(template: str, context: dict[str, str]) -> str:

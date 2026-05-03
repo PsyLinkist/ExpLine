@@ -34,3 +34,4 @@
 12. 补充 GitHub 发布后的安装方式，包括 `pip install git+https://github.com/<your-name>/ExpLine.git`。
 13. 更新 `.gitignore`，排除 `.expline/`、临时验证目录、构建产物和 egg-info 目录。
 14. 清理公开版 README，删除本地开发路径、GitHub 发布步骤和维护者说明，只保留用户安装与使用方法。
+15. 支持通过 `OPENAI_BASE_URL` 环境变量或 `expline config set openai-base-url <url>` 设置 OpenAI 兼容接口地址，并自动兼容 `/v1` 与 `/v1/responses` 两种写法。
