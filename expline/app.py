@@ -254,13 +254,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 def cmd_init(args: argparse.Namespace) -> int:
     root = Path.cwd()
+    progress = ProgressBar("ExpLine init", total=5)
+    progress.step("Preparing .expline workspace")
     ensure_layout(root)
     config = ensure_config(root)
     ensure_default_text(project_prompt_path(root), DEFAULT_PROJECT_PROMPT_TEMPLATE)
     ensure_default_text(record_prompt_path(root), DEFAULT_RECORD_PROMPT_TEMPLATE)
     initialize_index(root)
     report_language = resolve_report_language(args, config)
-    result = regenerate_project_summary(root, config, use_ai=not args.no_ai, report_language=report_language)
+    result = regenerate_project_summary(root, config, use_ai=not args.no_ai, report_language=report_language, progress=progress)
+    progress.done("Initialization complete")
     print(f"Initialized ExpLine in {app_path(root)}")
     print_project_summary_status(result)
     return 0
@@ -269,9 +272,11 @@ def cmd_init(args: argparse.Namespace) -> int:
 def cmd_rescan(args: argparse.Namespace) -> int:
     root = Path.cwd()
     assert_initialized(root)
+    progress = ProgressBar("ExpLine rescan", total=4)
     config = ensure_config(root)
     report_language = resolve_report_language(args, config)
-    result = regenerate_project_summary(root, config, use_ai=not args.no_ai, report_language=report_language)
+    result = regenerate_project_summary(root, config, use_ai=not args.no_ai, report_language=report_language, progress=progress)
+    progress.done("Project summary refreshed")
     print_project_summary_status(result)
     return 0
 
@@ -530,10 +535,50 @@ def normalize_config_key(key: str) -> str:
     return aliases[normalized]
 
 
-def regenerate_project_summary(root: Path, config: dict[str, Any], use_ai: bool, report_language: str) -> AIResult:
+class ProgressBar:
+    def __init__(self, label: str, total: int) -> None:
+        self.label = label
+        self.total = total
+        self.current = 0
+        self.interactive = sys.stdout.isatty()
+
+    def step(self, message: str) -> None:
+        self.current = min(self.current + 1, self.total)
+        self.render(message)
+
+    def done(self, message: str) -> None:
+        self.current = self.total
+        self.render(message)
+        if self.interactive:
+            print()
+
+    def render(self, message: str) -> None:
+        width = 24
+        filled = round(width * self.current / self.total) if self.total else width
+        bar = "#" * filled + "-" * (width - filled)
+        line = f"{self.label} [{bar}] {self.current}/{self.total} {message}"
+        if self.interactive:
+            print(f"\r{line}", end="", flush=True)
+        else:
+            print(line)
+
+
+def regenerate_project_summary(
+    root: Path,
+    config: dict[str, Any],
+    use_ai: bool,
+    report_language: str,
+    progress: ProgressBar | None = None,
+) -> AIResult:
+    if progress:
+        progress.step("Scanning project files")
     project_context = build_project_context(root, config)
+    if progress:
+        progress.step("Preparing project summary prompt")
     fallback_output = fallback_project_summary(project_context, report_language)
     prompt_template = project_prompt_path(root).read_text(encoding="utf-8")
+    if progress:
+        progress.step("Generating semantic project summary")
     result = generate_structured_output(
         task_name="project_summary",
         prompt_template=prompt_template,
@@ -546,6 +591,8 @@ def regenerate_project_summary(root: Path, config: dict[str, Any], use_ai: bool,
         fallback_output=fallback_output,
         config={**config, "ai_backend": config.get("ai_backend", "auto") if use_ai else "stub"},
     )
+    if progress:
+        progress.step("Writing project summary files")
     markdown = render_project_summary_markdown(result.output)
     project_summary_json_path(root).write_text(json.dumps(result.output, ensure_ascii=False, indent=2), encoding="utf-8")
     project_summary_ai_md_path(root).write_text(markdown, encoding="utf-8")
