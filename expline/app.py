@@ -72,6 +72,8 @@ Important constraints:
 - If many files changed, identify the 1-3 files most likely to affect the experiment outcome and explain their specific role first.
 - Base change_description on concrete diff hunks, not just filenames. Explain what behavior the edited code now performs differently from the parent experiment.
 - Distinguish "file role" from "actual change": do not merely say a file is the retrieval backbone; say what logic in that file changed and how that changes the experiment design.
+- When git_diff_mode is parent_commit, interpret the diff direction carefully: removed '-' lines are parent experiment behavior, added '+' lines are current experiment behavior.
+- Explicitly describe the experiment design transition: parent pipeline/design -> current pipeline/design -> why this changes the experimental question or control condition.
 
 Project summary:
 {{ project_summary }}
@@ -87,6 +89,9 @@ Current Git commit:
 
 Current Git branch:
 {{ git_branch }}
+
+Git diff comparison:
+{{ git_diff_comparison }}
 
 Changed files:
 {{ changed_files }}
@@ -950,6 +955,7 @@ def generate_experiment_report(
     result_artifacts: list[dict[str, Any]],
 ) -> AIResult:
     project_summary = project_summary_md_path(root).read_text(encoding="utf-8") if project_summary_md_path(root).exists() else "(project summary missing)"
+    git_diff_comparison = build_git_diff_comparison(git_snapshot, parent_id, parent_record)
     focused_diff_text = build_focused_diff_text(git_snapshot.diff, config)
     changed_file_snippets = build_changed_file_snippets(root, git_snapshot.changed_files, config)
     parent_report_text = parent_record["editable_markdown"] if parent_record and parent_record.get("editable_markdown") else "(no parent experiment)"
@@ -963,6 +969,8 @@ def generate_experiment_report(
         result_artifacts=result_artifacts,
     )
     prompt_template = enrich_record_prompt_template(record_prompt_path(root).read_text(encoding="utf-8"))
+    if "{{ git_diff_comparison }}" not in prompt_template:
+        prompt_template = f"{prompt_template.rstrip()}\n\nGit diff comparison:\n{{{{ git_diff_comparison }}}}\n"
     if "{{ focused_diff_text }}" not in prompt_template:
         prompt_template = f"{prompt_template.rstrip()}\n\nFocused code/config diff:\n{{{{ focused_diff_text }}}}\n"
     if "{{ result_artifacts }}" not in prompt_template:
@@ -977,6 +985,7 @@ def generate_experiment_report(
             "command": command_text,
             "git_commit": git_snapshot.commit or "N/A",
             "git_branch": git_snapshot.branch or "N/A",
+            "git_diff_comparison": git_diff_comparison,
             "changed_files": "\n".join(git_snapshot.changed_files) if git_snapshot.changed_files else "(none)",
             "focused_diff_text": focused_diff_text,
             "diff_text": git_snapshot.diff or "(no diff available)",
@@ -1012,6 +1021,39 @@ def build_changed_file_snippets(root: Path, changed_files: list[str], config: di
             continue
         snippets.append(f"### {file_name}\n{excerpt}\n")
     return "\n".join(snippets) if snippets else "(changed files are not readable text files)"
+
+
+def build_git_diff_comparison(
+    git_snapshot: GitSnapshot,
+    parent_id: str | None,
+    parent_record: dict[str, Any] | None,
+) -> str:
+    lines = [
+        f"- mode: {git_snapshot.diff_mode}",
+        f"- parent_experiment_id: {parent_id or 'None'}",
+        f"- parent_experiment_commit: {parent_record.get('git_commit') if parent_record else 'N/A'}",
+        f"- diff_base: {git_snapshot.diff_base or 'N/A'}",
+        f"- diff_target: {git_snapshot.diff_target or 'N/A'}",
+        f"- current_commit: {git_snapshot.commit or 'N/A'}",
+        f"- current_branch: {git_snapshot.branch or 'N/A'}",
+    ]
+    if git_snapshot.diff_mode == "parent_commit":
+        lines.extend(
+            [
+                "- interpretation: compare parent experiment commit to current experiment commit.",
+                "- removed_lines: behavior present in the parent experiment side.",
+                "- added_lines: behavior present in the current experiment side.",
+                "- required_focus: explain the experiment design transition from parent to current, not just a list of edited files.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "- interpretation: compare current workspace changes against the current HEAD.",
+                "- required_focus: explain how uncommitted code/config changes alter this experiment run.",
+            ]
+        )
+    return "\n".join(lines)
 
 
 def build_focused_diff_text(diff_text: str, config: dict[str, Any]) -> str:
@@ -1087,6 +1129,8 @@ Experiment-critical analysis rules:
 - In change_description, start with the concrete experimental mechanism before mentioning docs or cleanup.
 - Use Focused code/config diff as primary evidence. Name the actual edited functions/classes/parameters/control flow and explain how they alter the experiment design compared with the parent experiment.
 - Avoid file-role summaries. Do not write only that a file "is the retrieval backbone"; describe the concrete logic that changed inside it.
+- If git_diff_mode is parent_commit, use Git diff comparison to interpret direction: '-' is parent experiment behavior and '+' is current experiment behavior.
+- The report must answer this explicitly: compared with the parent experiment, what experimental pipeline/design was removed, added, or replaced?
 - If result artifacts are provided, connect metric/output changes back to the concrete code/config/command changes, but avoid claiming causality without evidence.
 """
     )

@@ -166,6 +166,8 @@ expline run --result-path outputs/latest -- python main.py
 
 ExpLine 也会自动从完整 diff 中提取一个 `Focused code/config diff`，优先把代码、入口脚本和配置文件的真实 diff hunks 提供给 AI，减少报告停留在“哪些文件变了”的层面。
 
+跨分支父实验比较时，Prompt 会显式标出 diff 方向：`-` 表示父实验中的行为，`+` 表示当前实验中的行为。报告应围绕“父实验流程/设计 -> 当前实验流程/设计”的变化来写。
+
 ### 查看实验报告
 
 ```bash
