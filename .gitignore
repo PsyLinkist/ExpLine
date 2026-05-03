@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.expline/
+.tmp/
+tmp_git_verify*/
+*.egg-info/
+build/
+dist/
