@@ -42,3 +42,6 @@
 20. 调整变更文件片段排序，优先把 `src/`、入口脚本和配置文件提供给 AI，再处理文档类文件。
 21. 新增 Focused code/config diff：从完整 diff 中优先抽取代码、入口脚本和配置文件的真实 diff hunks，要求 AI 基于具体代码变化解释实验设计结构变化。
 22. 在实验报告 Prompt 中加入 Git diff comparison 元信息，明确跨分支父实验比较时 `-` 为父实验行为、`+` 为当前实验行为，并要求报告解释实验流程/设计从父实验到当前实验的结构性变化。
+23. 支持通过 `expline config set diff-max-chars <n>` 和 `expline config set focused-diff-max-chars <n>` 调整 diff 上下文预算。
+24. Focused diff 改为按文件分配预算，并优先保留 `project_summary.md` 中 `Experiment-Sensitive Modules` 列出的核心文件，避免关键代码 diff 被入口脚本或长文档挤掉。
+25. 文档类 diff 默认不进入 Focused diff，只保留在完整 diff 中作为辅助背景。

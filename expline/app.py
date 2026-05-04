@@ -433,7 +433,7 @@ def cmd_config_set(args: argparse.Namespace) -> int:
     ensure_layout(root)
     config = ensure_config(root)
     key = normalize_config_key(args.key)
-    config[key] = args.value.strip() if isinstance(args.value, str) else args.value
+    config[key] = coerce_config_value(key, args.value)
     write_json(config_path(root), config)
     print(f"{args.key} = {config[key]}")
     return 0
@@ -561,11 +561,26 @@ def normalize_config_key(key: str) -> str:
         "base-url": "openai_base_url",
         "openai-model": "openai_model",
         "model": "openai_model",
+        "diff-max-chars": "diff_max_chars",
+        "focused-diff-max-chars": "focused_diff_max_chars",
     }
     if normalized not in aliases:
         allowed = ", ".join(sorted(aliases))
         raise SystemExit(f"Unsupported config key: {key}. Supported keys: {allowed}")
     return aliases[normalized]
+
+
+def coerce_config_value(key: str, value: str) -> Any:
+    text = value.strip() if isinstance(value, str) else value
+    if key in {"diff_max_chars", "focused_diff_max_chars"}:
+        try:
+            parsed = int(text)
+        except (TypeError, ValueError):
+            raise SystemExit(f"{key} must be an integer")
+        if parsed <= 0:
+            raise SystemExit(f"{key} must be greater than 0")
+        return parsed
+    return text
 
 
 class ProgressBar:
@@ -956,7 +971,7 @@ def generate_experiment_report(
 ) -> AIResult:
     project_summary = project_summary_md_path(root).read_text(encoding="utf-8") if project_summary_md_path(root).exists() else "(project summary missing)"
     git_diff_comparison = build_git_diff_comparison(git_snapshot, parent_id, parent_record)
-    focused_diff_text = build_focused_diff_text(git_snapshot.diff, config)
+    focused_diff_text = build_focused_diff_text(git_snapshot.diff, config, project_summary)
     changed_file_snippets = build_changed_file_snippets(root, git_snapshot.changed_files, config)
     parent_report_text = parent_record["editable_markdown"] if parent_record and parent_record.get("editable_markdown") else "(no parent experiment)"
     result_artifact_summary = render_result_artifacts_for_prompt(result_artifacts)
@@ -1056,20 +1071,80 @@ def build_git_diff_comparison(
     return "\n".join(lines)
 
 
-def build_focused_diff_text(diff_text: str, config: dict[str, Any]) -> str:
+def build_focused_diff_text(diff_text: str, config: dict[str, Any], project_summary: str = "") -> str:
     if not diff_text.strip():
         return "(no focused code/config diff available)"
     max_chars = int(config.get("focused_diff_max_chars", 12000))
+    sensitive_paths = extract_experiment_sensitive_paths(project_summary)
     file_diffs = split_unified_diff_by_file(diff_text)
     priority_diffs = [
-        (changed_file_priority(path), path, block)
+        (focused_diff_priority(path, sensitive_paths), path, block)
         for path, block in file_diffs
-        if changed_file_priority(path)[0] <= 3
+        if include_in_focused_diff(path, sensitive_paths)
     ]
     if not priority_diffs:
         return "(no code/config diff hunks found; see Current diff for other changes)"
-    ordered_blocks = [block for _priority, _path, block in sorted(priority_diffs, key=lambda item: item[0])]
-    return truncate_text("\n".join(ordered_blocks), max_chars, "focused code/config diff truncated by ExpLine")
+    return allocate_focused_diff_budget(sorted(priority_diffs, key=lambda item: item[0]), max_chars)
+
+
+def allocate_focused_diff_budget(priority_diffs: list[tuple[tuple[int, str], str, str]], max_chars: int) -> str:
+    block_count = len(priority_diffs)
+    min_per_file = min(3000, max(1200, max_chars // max(block_count, 1)))
+    remaining = max_chars
+    selected: list[str] = []
+    omitted: list[str] = []
+    for _priority, path, block in priority_diffs:
+        if remaining <= 0:
+            omitted.append(path)
+            continue
+        budget = min(len(block), max(min_per_file, remaining // max(block_count - len(selected), 1)))
+        if budget > remaining:
+            budget = remaining
+        rendered = block if len(block) <= budget else truncate_to_budget(block, budget, f"focused diff for {path} truncated by ExpLine")
+        selected.append(rendered)
+        remaining -= len(rendered) + 1
+    if omitted:
+        selected.append("[Focused diff omitted files due to budget: " + ", ".join(omitted) + "]")
+    return "\n".join(selected)
+
+
+def truncate_to_budget(text: str, max_chars: int, marker: str) -> str:
+    suffix = f"\n\n[{marker}]\n"
+    if max_chars <= len(suffix):
+        return suffix[:max_chars]
+    return text[: max_chars - len(suffix)] + suffix
+
+
+def include_in_focused_diff(path: str, sensitive_paths: set[str]) -> bool:
+    normalized = path.replace("\\", "/").lower()
+    if normalized in sensitive_paths:
+        return True
+    priority = changed_file_priority(path)[0]
+    return priority <= 3
+
+
+def focused_diff_priority(path: str, sensitive_paths: set[str]) -> tuple[int, str]:
+    normalized = path.replace("\\", "/").lower()
+    if normalized in sensitive_paths:
+        return (-1, normalized)
+    return changed_file_priority(path)
+
+
+def extract_experiment_sensitive_paths(project_summary: str) -> set[str]:
+    sensitive_paths: set[str] = set()
+    in_sensitive_section = False
+    for raw_line in project_summary.splitlines():
+        line = raw_line.strip()
+        if line.startswith("## "):
+            heading = line.lstrip("#").strip().lower()
+            in_sensitive_section = heading in {"experiment-sensitive modules", "experiment sensitive modules"}
+            continue
+        if not in_sensitive_section or not line.startswith("- "):
+            continue
+        candidate = line[2:].strip().strip("`")
+        if candidate and not any(token in candidate for token in ["*", "<", ">"]):
+            sensitive_paths.add(candidate.replace("\\", "/").lower())
+    return sensitive_paths
 
 
 def split_unified_diff_by_file(diff_text: str) -> list[tuple[str, str]]:
