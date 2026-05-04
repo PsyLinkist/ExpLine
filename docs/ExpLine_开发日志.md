@@ -48,3 +48,4 @@
 1. 支持通过 `expline config set diff-max-chars <n>` 和 `expline config set focused-diff-max-chars <n>` 调整 diff 上下文预算。
 2. Focused diff 改为按文件分配预算，并优先保留 `project_summary.md` 中 `Experiment-Sensitive Modules` 列出的核心文件，避免关键代码 diff 被入口脚本或长文档挤掉。
 3. 文档类 diff 默认不进入 Focused diff，只保留在完整 diff 中作为辅助背景。
+4. 新增 `expline graph`，可以输出 Mermaid 格式的实验父子路径图，并支持通过 `--output` 保存为 Markdown 文件。

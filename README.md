@@ -193,6 +193,18 @@ expline edit EXP-0001
 
 该命令会输出对应实验的 `record.md` 路径。研究者可以直接编辑该文件，修正或补充 AI 生成的语义实验记录。
 
+### 可视化实验路径
+
+```bash
+expline graph
+```
+
+该命令会输出 Mermaid 格式的实验谱系图。也可以保存成 Markdown：
+
+```bash
+expline graph --output .expline/experiment_graph.md
+```
+
 ## 运行数据目录
 
 运行 `expline init` 后，当前实验项目下会生成 `.expline/`：
