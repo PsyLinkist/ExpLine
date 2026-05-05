@@ -198,6 +198,8 @@ expline list --parent EXP-0001
 
 `list` 会从 `.expline/index.json` 读取实验索引，并在需要时回读 `record.json` 补充分支等信息。如果列表为空但实验目录存在，可以先运行 `expline rebuild`。
 
+默认输出包含实验 ID、创建时间、父实验、Git 分支、Git commit 短哈希和标题，适合快速确认最近跑过哪些实验以及它们所在的实验线。
+
 ### 查看实验报告
 
 ```bash

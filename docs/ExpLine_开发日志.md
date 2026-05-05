@@ -54,3 +54,4 @@
 1. 指定或推断出的父实验不存在时，`expline run` 会在运行用户命令前直接报错，避免生成孤立或错误链路。
 2. 调整结果产物 Prompt 说明，明确 `--result-path` 只作为保存产物证据，不用于解释指标变化原因或判断实验好坏。
 3. 新增 `expline rebuild`，可以从 `.expline/experiments/*/record.json` 重建 `.expline/index.json`，并报告重复实验 ID、缺失父实验和损坏记录等链路问题。
+4. 新增 `expline list`，可以按时间倒序查看实验列表，并支持 `--limit`、`--branch`、`--parent` 过滤。
