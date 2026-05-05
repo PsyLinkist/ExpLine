@@ -261,10 +261,6 @@ def build_parser() -> argparse.ArgumentParser:
     edit_parser.add_argument("experiment_id", help="Experiment ID like EXP-0001")
     edit_parser.set_defaults(func=cmd_edit)
 
-    graph_parser = subparsers.add_parser("graph", help="Render the experiment lineage as Mermaid")
-    graph_parser.add_argument("--output", "-o", help="Write Mermaid markdown to this path instead of stdout")
-    graph_parser.set_defaults(func=cmd_graph)
-
     config_parser = subparsers.add_parser("config", help="Read or update ExpLine project settings")
     config_subparsers = config_parser.add_subparsers(dest="config_command", required=True)
 
@@ -420,20 +416,6 @@ def cmd_edit(args: argparse.Namespace) -> int:
     if not record_path.exists():
         raise SystemExit(f"Experiment not found: {args.experiment_id}")
     print(record_path)
-    return 0
-
-
-def cmd_graph(args: argparse.Namespace) -> int:
-    root = Path.cwd()
-    assert_initialized(root)
-    index = load_index(root)
-    mermaid = render_experiment_graph(index)
-    if args.output:
-        output_path = Path(args.output)
-        output_path.write_text(mermaid + "\n", encoding="utf-8")
-        print(output_path)
-    else:
-        print(mermaid)
     return 0
 
 
@@ -1538,50 +1520,6 @@ def update_index(index: dict[str, Any], record: dict[str, Any]) -> None:
     if commit:
         commit_index = index.setdefault("commit_index", {})
         commit_index.setdefault(commit, []).append(record["experiment_id"])
-
-
-def render_experiment_graph(index: dict[str, Any]) -> str:
-    experiments = index.get("experiments", [])
-    lines = ["```mermaid", "flowchart TD"]
-    if not experiments:
-        lines.append('  empty["No experiments recorded yet"]')
-        lines.append("```")
-        return "\n".join(lines)
-
-    known_ids = {str(item.get("experiment_id")) for item in experiments}
-    for item in experiments:
-        experiment_id = str(item.get("experiment_id", "UNKNOWN"))
-        label = build_graph_label(item)
-        lines.append(f'  {graph_node_id(experiment_id)}["{escape_mermaid_label(label)}"]')
-
-    for item in experiments:
-        experiment_id = str(item.get("experiment_id", "UNKNOWN"))
-        parent_id = item.get("parent_id")
-        if parent_id and str(parent_id) in known_ids:
-            lines.append(f"  {graph_node_id(str(parent_id))} --> {graph_node_id(experiment_id)}")
-        elif parent_id:
-            parent_node = graph_node_id(str(parent_id))
-            lines.append(f'  {parent_node}["{escape_mermaid_label(str(parent_id) + " (missing)") }"]')
-            lines.append(f"  {parent_node} --> {graph_node_id(experiment_id)}")
-    lines.append("```")
-    return "\n".join(lines)
-
-
-def build_graph_label(record: dict[str, Any]) -> str:
-    experiment_id = str(record.get("experiment_id", "UNKNOWN"))
-    title = str(record.get("title") or "Untitled")
-    commit = str(record.get("git_commit") or "no commit")[:7]
-    created_at = str(record.get("created_at") or "")
-    date = created_at[:10] if created_at else "unknown date"
-    return f"{experiment_id}\\n{title}\\n{commit} · {date}"
-
-
-def graph_node_id(experiment_id: str) -> str:
-    return "exp_" + "".join(char if char.isalnum() else "_" for char in experiment_id)
-
-
-def escape_mermaid_label(label: str) -> str:
-    return label.replace("\\", "\\\\").replace('"', "'")
 
 
 def now_iso() -> str:
