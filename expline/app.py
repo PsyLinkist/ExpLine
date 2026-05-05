@@ -105,7 +105,7 @@ Current diff:
 Changed file snippets:
 {{ changed_file_snippets }}
 
-Experiment result artifacts:
+Recorded result artifacts (evidence only, not result analysis):
 {{ result_artifacts }}
 
 Return:
@@ -317,6 +317,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     git_snapshot = collect_git_snapshot(root, config)
     index = load_index(root)
     parent_id = args.parent_id or infer_parent_experiment(root, index, git_snapshot)
+    parent_record = load_parent_record(root, parent_id)
+    validate_parent_record(parent_id, parent_record, explicit=bool(args.parent_id))
     experiment_id = next_experiment_id(index)
     experiment_dir = experiments_path(root) / experiment_id
     experiment_dir.mkdir(parents=True, exist_ok=False)
@@ -324,7 +326,6 @@ def cmd_run(args: argparse.Namespace) -> int:
     started_at = now_iso()
     command_text = format_command(command_parts)
     command_result = run_user_command(command_parts, root)
-    parent_record = load_parent_record(root, parent_id)
     git_snapshot = collect_parent_aware_git_snapshot(root, config, git_snapshot, parent_record)
     result_artifacts = collect_result_artifacts(root, args.result_path, config)
     semantic_result = generate_experiment_report(
@@ -956,6 +957,16 @@ def load_parent_record(root: Path, parent_id: str | None) -> dict[str, Any] | No
     return payload
 
 
+def validate_parent_record(parent_id: str | None, parent_record: dict[str, Any] | None, explicit: bool) -> None:
+    if not parent_id or parent_record is not None:
+        return
+    source = "specified" if explicit else "inferred"
+    raise SystemExit(
+        f"Parent experiment {source} but not found: {parent_id}. "
+        "Check the experiment ID or rebuild the ExpLine index after merging branches."
+    )
+
+
 def generate_experiment_report(
     *,
     root: Path,
@@ -989,7 +1000,7 @@ def generate_experiment_report(
     if "{{ focused_diff_text }}" not in prompt_template:
         prompt_template = f"{prompt_template.rstrip()}\n\nFocused code/config diff:\n{{{{ focused_diff_text }}}}\n"
     if "{{ result_artifacts }}" not in prompt_template:
-        prompt_template = f"{prompt_template.rstrip()}\n\nExperiment result artifacts:\n{{{{ result_artifacts }}}}\n"
+        prompt_template = f"{prompt_template.rstrip()}\n\nRecorded result artifacts (evidence only, not result analysis):\n{{{{ result_artifacts }}}}\n"
     result = generate_structured_output(
         task_name="experiment_report",
         prompt_template=prompt_template,
@@ -1206,7 +1217,7 @@ Experiment-critical analysis rules:
 - Avoid file-role summaries. Do not write only that a file "is the retrieval backbone"; describe the concrete logic that changed inside it.
 - If git_diff_mode is parent_commit, use Git diff comparison to interpret direction: '-' is parent experiment behavior and '+' is current experiment behavior.
 - The report must answer this explicitly: compared with the parent experiment, what experimental pipeline/design was removed, added, or replaced?
-- If result artifacts are provided, connect metric/output changes back to the concrete code/config/command changes, but avoid claiming causality without evidence.
+- If result artifacts are provided, use them only as saved-output evidence. Do not explain metric changes, judge result quality, infer causality, or claim the method is better/worse because of those values.
 """
     )
 
