@@ -253,6 +253,12 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("command_parts", nargs=argparse.REMAINDER, help="Command to execute after --")
     run_parser.set_defaults(func=cmd_run)
 
+    list_parser = subparsers.add_parser("list", help="List recorded experiments")
+    list_parser.add_argument("--limit", type=int, help="Show at most N experiments")
+    list_parser.add_argument("--branch", help="Only show experiments recorded on this Git branch")
+    list_parser.add_argument("--parent", dest="parent_id", help="Only show direct children of this parent experiment")
+    list_parser.set_defaults(func=cmd_list)
+
     show_parser = subparsers.add_parser("show", help="Show a recorded experiment")
     show_parser.add_argument("experiment_id", help="Experiment ID like EXP-0001")
     show_parser.set_defaults(func=cmd_show)
@@ -395,6 +401,33 @@ def cmd_run(args: argparse.Namespace) -> int:
     if command_result.returncode != 0:
         print(f"Wrapped command exited with code {command_result.returncode}", file=sys.stderr)
     return command_result.returncode
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    root = Path.cwd()
+    assert_initialized(root)
+    index = load_index(root)
+    experiments = build_list_experiment_rows(root, index)
+
+    if args.branch:
+        experiments = [item for item in experiments if item.get("git_branch") == args.branch]
+    if args.parent_id:
+        experiments = [item for item in experiments if item.get("parent_id") == args.parent_id]
+
+    experiments.sort(key=lambda item: (str(item.get("created_at") or ""), str(item.get("experiment_id") or "")), reverse=True)
+
+    if args.limit is not None:
+        if args.limit <= 0:
+            raise SystemExit("--limit must be greater than 0")
+        experiments = experiments[: args.limit]
+
+    if not experiments:
+        print("No experiments found.")
+        print("If records exist under .expline/experiments, run: expline rebuild")
+        return 0
+
+    print_experiment_table(experiments)
+    return 0
 
 
 def cmd_show(args: argparse.Namespace) -> int:
@@ -1535,6 +1568,86 @@ def render_experiment_markdown(record: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def build_list_experiment_rows(root: Path, index: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for entry in index.get("experiments", []):
+        if not isinstance(entry, dict):
+            continue
+        experiment_id = str(entry.get("experiment_id") or "")
+        if not experiment_id:
+            continue
+        record = load_experiment_record(root, experiment_id)
+        merged = dict(entry)
+        if record:
+            for key in ("parent_id", "title", "summary", "git_commit", "git_branch", "created_at"):
+                if merged.get(key) in (None, "") and record.get(key) not in (None, ""):
+                    merged[key] = record.get(key)
+        rows.append(merged)
+    return rows
+
+
+def load_experiment_record(root: Path, experiment_id: str) -> dict[str, Any] | None:
+    record_json_path = experiments_path(root) / experiment_id / "record.json"
+    if not record_json_path.exists():
+        return None
+    try:
+        data = json.loads(record_json_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def print_experiment_table(experiments: list[dict[str, Any]]) -> None:
+    headers = ["ID", "Created", "Parent", "Branch", "Commit", "Title"]
+    rows = [
+        [
+            str(item.get("experiment_id") or ""),
+            format_list_datetime(item.get("created_at")),
+            str(item.get("parent_id") or "-"),
+            truncate_text(str(item.get("git_branch") or "-"), 18),
+            short_commit(item.get("git_commit")),
+            truncate_text(str(item.get("title") or item.get("summary") or ""), 54),
+        ]
+        for item in experiments
+    ]
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for index, cell in enumerate(row):
+            widths[index] = max(widths[index], len(cell))
+
+    print("  ".join(header.ljust(widths[index]) for index, header in enumerate(headers)))
+    print("  ".join("-" * width for width in widths))
+    for row in rows:
+        print("  ".join(cell.ljust(widths[index]) for index, cell in enumerate(row)))
+
+
+def format_list_datetime(value: Any) -> str:
+    if not value:
+        return "-"
+    text = str(value)
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return truncate_text(text, 16)
+    return parsed.strftime("%Y-%m-%d %H:%M")
+
+
+def short_commit(value: Any) -> str:
+    if not value:
+        return "-"
+    text = str(value)
+    return text[:7]
+
+
+def truncate_text(text: str, max_chars: int) -> str:
+    compact = " ".join(text.split())
+    if len(compact) <= max_chars:
+        return compact
+    if max_chars <= 3:
+        return compact[:max_chars]
+    return compact[: max_chars - 3] + "..."
+
+
 def update_index(index: dict[str, Any], record: dict[str, Any]) -> None:
     summary_entry = {
         "experiment_id": record["experiment_id"],
@@ -1542,6 +1655,7 @@ def update_index(index: dict[str, Any], record: dict[str, Any]) -> None:
         "title": record["title"],
         "summary": record["summary"],
         "git_commit": record["git_commit"],
+        "git_branch": record["git_branch"],
         "created_at": record["created_at"],
     }
     index.setdefault("experiments", []).append(summary_entry)
@@ -1595,6 +1709,7 @@ def rebuild_index_from_records(root: Path) -> tuple[dict[str, Any], list[str]]:
             "title": record.get("title", ""),
             "summary": record.get("summary", ""),
             "git_commit": record.get("git_commit"),
+            "git_branch": record.get("git_branch"),
             "created_at": record.get("created_at", ""),
         }
         experiments.append(summary_entry)

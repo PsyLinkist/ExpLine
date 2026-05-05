@@ -177,6 +177,27 @@ expline config set focused-diff-max-chars 40000
 
 Focused diff 会优先保留 `project_summary.md` 中 `Experiment-Sensitive Modules` 列出的核心文件，并默认排除文档类 diff，避免长文档挤掉关键代码变化。
 
+### 查看实验列表
+
+```bash
+expline list
+```
+
+只查看最近 10 条：
+
+```bash
+expline list --limit 10
+```
+
+按分支或父实验过滤：
+
+```bash
+expline list --branch main
+expline list --parent EXP-0001
+```
+
+`list` 会从 `.expline/index.json` 读取实验索引，并在需要时回读 `record.json` 补充分支等信息。如果列表为空但实验目录存在，可以先运行 `expline rebuild`。
+
 ### 查看实验报告
 
 ```bash
