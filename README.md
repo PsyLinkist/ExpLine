@@ -193,6 +193,14 @@ expline edit EXP-0001
 
 该命令会输出对应实验的 `record.md` 路径。研究者可以直接编辑该文件，修正或补充 AI 生成的语义实验记录。
 
+### 重建实验索引
+
+```bash
+expline rebuild
+```
+
+该命令会扫描 `.expline/experiments/*/record.json`，重新生成 `.expline/index.json`，并报告缺失父实验、重复实验 ID、损坏记录等链路问题。适合在多分支 merge、索引冲突或手动拷贝实验目录后使用。
+
 ## 运行数据目录
 
 运行 `expline init` 后，当前实验项目下会生成 `.expline/`：

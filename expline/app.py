@@ -261,6 +261,9 @@ def build_parser() -> argparse.ArgumentParser:
     edit_parser.add_argument("experiment_id", help="Experiment ID like EXP-0001")
     edit_parser.set_defaults(func=cmd_edit)
 
+    rebuild_parser = subparsers.add_parser("rebuild", help="Rebuild ExpLine index from experiment record.json files")
+    rebuild_parser.set_defaults(func=cmd_rebuild)
+
     config_parser = subparsers.add_parser("config", help="Read or update ExpLine project settings")
     config_subparsers = config_parser.add_subparsers(dest="config_command", required=True)
 
@@ -417,6 +420,21 @@ def cmd_edit(args: argparse.Namespace) -> int:
     if not record_path.exists():
         raise SystemExit(f"Experiment not found: {args.experiment_id}")
     print(record_path)
+    return 0
+
+
+def cmd_rebuild(args: argparse.Namespace) -> int:
+    root = Path.cwd()
+    assert_initialized(root)
+    rebuilt_index, warnings = rebuild_index_from_records(root)
+    save_index(root, rebuilt_index)
+    experiment_count = len(rebuilt_index.get("experiments", []))
+    print(f"Rebuilt ExpLine index from {experiment_count} experiment record(s).")
+    print(f"Next experiment ID: {EXPERIMENT_PREFIX}{rebuilt_index['next_id']:04d}")
+    if warnings:
+        print("Warnings:")
+        for warning in warnings:
+            print(f"- {warning}")
     return 0
 
 
@@ -1531,6 +1549,74 @@ def update_index(index: dict[str, Any], record: dict[str, Any]) -> None:
     if commit:
         commit_index = index.setdefault("commit_index", {})
         commit_index.setdefault(commit, []).append(record["experiment_id"])
+
+
+def rebuild_index_from_records(root: Path) -> tuple[dict[str, Any], list[str]]:
+    records: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    seen_ids: set[str] = set()
+    duplicate_ids: set[str] = set()
+
+    for record_path in sorted(experiments_path(root).glob(f"{EXPERIMENT_PREFIX}*/record.json")):
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            warnings.append(f"Could not read {record_path}: {exc}")
+            continue
+
+        experiment_id = str(record.get("experiment_id") or record_path.parent.name)
+        if experiment_id in seen_ids:
+            duplicate_ids.add(experiment_id)
+            continue
+        seen_ids.add(experiment_id)
+        records.append(record)
+
+    if duplicate_ids:
+        warnings.append("Duplicate experiment ID(s): " + ", ".join(sorted(duplicate_ids)))
+
+    records.sort(key=lambda item: (str(item.get("created_at") or ""), str(item.get("experiment_id") or "")))
+    experiments: list[dict[str, Any]] = []
+    commit_index: dict[str, list[str]] = {}
+    max_number = 0
+    known_ids = {str(record.get("experiment_id") or "") for record in records if record.get("experiment_id")}
+
+    for record in records:
+        experiment_id = str(record.get("experiment_id") or "")
+        if not experiment_id:
+            warnings.append("Record without experiment_id skipped.")
+            continue
+        max_number = max(max_number, parse_experiment_number(experiment_id))
+        parent_id = record.get("parent_id")
+        if parent_id and str(parent_id) not in known_ids:
+            warnings.append(f"{experiment_id} references missing parent {parent_id}.")
+        summary_entry = {
+            "experiment_id": experiment_id,
+            "parent_id": parent_id,
+            "title": record.get("title", ""),
+            "summary": record.get("summary", ""),
+            "git_commit": record.get("git_commit"),
+            "created_at": record.get("created_at", ""),
+        }
+        experiments.append(summary_entry)
+        commit = record.get("git_commit")
+        if commit:
+            commit_index.setdefault(str(commit), []).append(experiment_id)
+
+    return {
+        "next_id": max_number + 1,
+        "experiments": experiments,
+        "commit_index": commit_index,
+    }, warnings
+
+
+def parse_experiment_number(experiment_id: str) -> int:
+    if not experiment_id.startswith(EXPERIMENT_PREFIX):
+        return 0
+    suffix = experiment_id[len(EXPERIMENT_PREFIX) :]
+    try:
+        return int(suffix)
+    except ValueError:
+        return 0
 
 
 def now_iso() -> str:
