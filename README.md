@@ -200,6 +200,35 @@ expline list --parent EXP-0001
 
 默认输出包含实验 ID、创建时间、父实验、Git 分支、Git commit 短哈希和标题，适合快速确认最近跑过哪些实验以及它们所在的实验线。
 
+### 生成实验谱系页面
+
+```bash
+expline site
+```
+
+该命令会生成单文件静态页面：
+
+```text
+.expline/site/index.html
+```
+
+页面内嵌实验链路和实验记录摘要，支持节点点击查看详情、搜索节点、高亮父子链路，以及右键复制实验 ID、记录路径、diff 路径和 VS Code 打开命令。
+
+远程服务器推荐这样查看：
+
+```bash
+cd .expline/site
+python -m http.server 8765 --bind 127.0.0.1
+```
+
+然后在 VS Code Remote 的 Ports 面板转发 `8765` 端口，并在本地浏览器打开：
+
+```text
+http://localhost:8765
+```
+
+`init`、`run`、`rebuild` 后也会自动刷新该静态页面。
+
 ### 查看实验报告
 
 ```bash
@@ -238,6 +267,8 @@ expline rebuild
 |-- prompts/
 |   |-- project_summary_prompt.txt
 |   `-- experiment_record_prompt.txt
+|-- site/
+|   `-- index.html
 `-- experiments/
     `-- EXP-0001/
         |-- ai_prompt.txt
@@ -247,6 +278,8 @@ expline rebuild
         |-- diff.patch
         |-- record.ai.md
         |-- record.json
+        |-- result_artifacts.json
+        |-- result_artifacts.md
         `-- record.md
 ```
 
@@ -255,6 +288,7 @@ expline rebuild
 1. `.expline/project_summary.md` 是当前项目语义说明。
 2. `.expline/experiments/EXP-xxxx/record.ai.md` 是 AI 生成的实验报告原稿。
 3. `.expline/experiments/EXP-xxxx/record.md` 是用户可编辑的实验报告，也是 `show` 默认展示的版本。
+4. `.expline/site/index.html` 是静态实验谱系页面，可直接预览或通过本地静态服务器访问。
 
 ## AI 配置
 

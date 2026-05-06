@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import html as html_lib
 import json
 import os
 import subprocess
@@ -259,6 +260,9 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser.add_argument("--parent", dest="parent_id", help="Only show direct children of this parent experiment")
     list_parser.set_defaults(func=cmd_list)
 
+    site_parser = subparsers.add_parser("site", help="Generate the static experiment lineage HTML page")
+    site_parser.set_defaults(func=cmd_site)
+
     show_parser = subparsers.add_parser("show", help="Show a recorded experiment")
     show_parser.add_argument("experiment_id", help="Experiment ID like EXP-0001")
     show_parser.set_defaults(func=cmd_show)
@@ -296,6 +300,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     initialize_index(root)
     report_language = resolve_report_language(args, config)
     result = regenerate_project_summary(root, config, use_ai=not args.no_ai, report_language=report_language, progress=progress)
+    refresh_site(root)
     progress.done("Initialization complete")
     print(f"Initialized ExpLine in {app_path(root)}")
     print_project_summary_status(result)
@@ -391,6 +396,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     )
     update_index(index, record)
     save_index(root, index)
+    refresh_site(root, index)
 
     print(f"Recorded experiment {experiment_id} in {experiment_dir}")
     print(f"Editable report: {experiment_dir / 'record.md'}")
@@ -430,6 +436,19 @@ def cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_site(args: argparse.Namespace) -> int:
+    root = Path.cwd()
+    assert_initialized(root)
+    index = load_index(root)
+    html_path = write_site(root, index)
+    print(f"Generated ExpLine site: {html_path}")
+    print("Remote server preview:")
+    print("  cd .expline/site")
+    print("  python -m http.server 8765 --bind 127.0.0.1")
+    print("Then forward port 8765 in VS Code Remote or SSH and open http://localhost:8765")
+    return 0
+
+
 def cmd_show(args: argparse.Namespace) -> int:
     root = Path.cwd()
     assert_initialized(root)
@@ -461,6 +480,7 @@ def cmd_rebuild(args: argparse.Namespace) -> int:
     assert_initialized(root)
     rebuilt_index, warnings = rebuild_index_from_records(root)
     save_index(root, rebuilt_index)
+    refresh_site(root, rebuilt_index)
     experiment_count = len(rebuilt_index.get("experiments", []))
     print(f"Rebuilt ExpLine index from {experiment_count} experiment record(s).")
     print(f"Next experiment ID: {EXPERIMENT_PREFIX}{rebuilt_index['next_id']:04d}")
@@ -497,6 +517,14 @@ def app_path(root: Path) -> Path:
 
 def experiments_path(root: Path) -> Path:
     return app_path(root) / "experiments"
+
+
+def site_dir(root: Path) -> Path:
+    return app_path(root) / "site"
+
+
+def site_index_path(root: Path) -> Path:
+    return site_dir(root) / "index.html"
 
 
 def prompts_dir(root: Path) -> Path:
@@ -559,6 +587,7 @@ def ensure_layout(root: Path) -> None:
     app_path(root).mkdir(exist_ok=True)
     experiments_path(root).mkdir(parents=True, exist_ok=True)
     prompts_dir(root).mkdir(parents=True, exist_ok=True)
+    site_dir(root).mkdir(parents=True, exist_ok=True)
 
 
 def ensure_config(root: Path) -> dict[str, Any]:
@@ -1566,6 +1595,545 @@ def render_experiment_markdown(record: dict[str, Any]) -> str:
         )
     lines.append("")
     return "\n".join(lines)
+
+
+def refresh_site(root: Path, index: dict[str, Any] | None = None) -> None:
+    try:
+        write_site(root, index or load_index(root))
+    except Exception as exc:
+        print(f"Warning: could not refresh ExpLine site: {exc}", file=sys.stderr)
+
+
+def write_site(root: Path, index: dict[str, Any]) -> Path:
+    site_dir(root).mkdir(parents=True, exist_ok=True)
+    data = build_site_data(root, index)
+    html = render_site_html(data)
+    path = site_index_path(root)
+    path.write_text(html, encoding="utf-8")
+    return path
+
+
+def build_site_data(root: Path, index: dict[str, Any]) -> dict[str, Any]:
+    experiments = []
+    for entry in build_list_experiment_rows(root, index):
+        experiment_id = str(entry.get("experiment_id") or "")
+        if not experiment_id:
+            continue
+        experiment_dir = experiments_path(root) / experiment_id
+        record = load_experiment_record(root, experiment_id) or entry
+        experiments.append(build_site_experiment(root, experiment_dir, record))
+    experiments.sort(key=lambda item: (str(item.get("created_at") or ""), str(item.get("experiment_id") or "")))
+    return {
+        "generated_at": now_iso(),
+        "project_root": str(root.resolve()),
+        "site_path": str(site_index_path(root).resolve()),
+        "experiments": experiments,
+        "edges": [
+            {"source": item["parent_id"], "target": item["experiment_id"]}
+            for item in experiments
+            if item.get("parent_id")
+        ],
+    }
+
+
+def build_site_experiment(root: Path, experiment_dir: Path, record: dict[str, Any]) -> dict[str, Any]:
+    experiment_id = str(record.get("experiment_id") or experiment_dir.name)
+    record_md = read_optional_text(editable_record_path(experiment_dir))
+    command_text = read_optional_text(experiment_dir / "command.txt") or str(record.get("command") or "")
+    changed_files_text = read_optional_text(experiment_dir / "changed_files.txt")
+    diff_text = read_optional_text(experiment_dir / "diff.patch")
+    if diff_text:
+        diff_text = truncate_text(diff_text, 30000, "[site diff preview truncated by ExpLine]")
+    semantic_diff = record.get("semantic_diff_from_parent") or {}
+    evidence = record.get("evidence_index")
+    if evidence is None:
+        evidence = record.get("evidence_files", [])
+    return {
+        "experiment_id": experiment_id,
+        "parent_id": record.get("parent_id"),
+        "title": record.get("title") or experiment_id,
+        "summary": record.get("summary") or "",
+        "change_description": record.get("change_description") or "",
+        "command": command_text,
+        "created_at": record.get("created_at") or "",
+        "git_commit": record.get("git_commit"),
+        "git_branch": record.get("git_branch"),
+        "git_dirty": record.get("git_dirty"),
+        "change_types": record.get("change_types") or [],
+        "affected_files": record.get("affected_files") or [],
+        "affected_stages": record.get("affected_stages") or [],
+        "semantic_before": semantic_diff.get("before", "") if isinstance(semantic_diff, dict) else "",
+        "semantic_after": semantic_diff.get("after", "") if isinstance(semantic_diff, dict) else "",
+        "evidence": evidence,
+        "record_md": record_md,
+        "changed_files_text": changed_files_text,
+        "diff_preview": diff_text,
+        "paths": {
+            "experiment_dir": str(experiment_dir.resolve()),
+            "record_md": str(editable_record_path(experiment_dir).resolve()),
+            "diff_patch": str((experiment_dir / "diff.patch").resolve()),
+            "command_txt": str((experiment_dir / "command.txt").resolve()),
+            "changed_files_txt": str((experiment_dir / "changed_files.txt").resolve()),
+        },
+    }
+
+
+def read_optional_text(path: Path) -> str:
+    try:
+        if path.exists():
+            return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return ""
+
+
+def render_site_html(data: dict[str, Any]) -> str:
+    payload = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
+    generated_at = html_lib.escape(str(data.get("generated_at") or ""))
+    project_root = html_lib.escape(str(data.get("project_root") or ""))
+    return SITE_HTML_TEMPLATE.replace("__EXPLINE_DATA__", payload).replace("__GENERATED_AT__", generated_at).replace("__PROJECT_ROOT__", project_root)
+
+
+SITE_HTML_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ExpLine Experiment Lineage</title>
+  <style>
+    :root {
+      --ink: #18201b;
+      --muted: #66736a;
+      --paper: #f6f0e4;
+      --panel: #fffaf0;
+      --line: #d8ccb7;
+      --accent: #1f7a68;
+      --accent-2: #e07836;
+      --shadow: 0 18px 55px rgba(57, 42, 22, 0.14);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 12% 5%, rgba(224, 120, 54, 0.18), transparent 32rem),
+        radial-gradient(circle at 90% 8%, rgba(31, 122, 104, 0.16), transparent 26rem),
+        linear-gradient(135deg, #fbf5e9 0%, #efe5d1 100%);
+      font-family: Georgia, "Times New Roman", serif;
+    }
+    header {
+      padding: 28px 34px 20px;
+      border-bottom: 1px solid rgba(99, 82, 52, 0.18);
+    }
+    h1 { margin: 0; font-size: clamp(30px, 5vw, 58px); letter-spacing: -0.05em; }
+    .subtitle { margin-top: 8px; color: var(--muted); font-family: "Trebuchet MS", sans-serif; }
+    .toolbar {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+      padding: 18px 34px;
+    }
+    input {
+      min-width: min(520px, 100%);
+      flex: 1;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 12px 18px;
+      background: rgba(255, 250, 240, 0.8);
+      color: var(--ink);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.8);
+      font-size: 15px;
+      font-family: "Trebuchet MS", sans-serif;
+    }
+    button {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 11px 15px;
+      background: var(--panel);
+      color: var(--ink);
+      cursor: pointer;
+      font-family: "Trebuchet MS", sans-serif;
+    }
+    main {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(340px, 0.8fr);
+      gap: 18px;
+      padding: 0 22px 22px;
+      min-height: calc(100vh - 150px);
+    }
+    .graph-wrap, .detail {
+      position: relative;
+      min-height: 620px;
+      border: 1px solid rgba(99, 82, 52, 0.18);
+      border-radius: 28px;
+      background: rgba(255, 250, 240, 0.72);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .graph {
+      position: relative;
+      min-height: 620px;
+      overflow: auto;
+      padding: 38px;
+    }
+    #edges {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      overflow: visible;
+    }
+    .node {
+      position: absolute;
+      width: 250px;
+      min-height: 118px;
+      padding: 15px 16px;
+      border: 1px solid rgba(31, 122, 104, 0.28);
+      border-radius: 22px;
+      background: linear-gradient(160deg, rgba(255,255,255,0.82), rgba(255,250,240,0.96));
+      box-shadow: 0 14px 34px rgba(55, 44, 22, 0.14);
+      cursor: pointer;
+      transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease, opacity 160ms ease;
+      font-family: "Trebuchet MS", sans-serif;
+    }
+    .node:hover { transform: translateY(-2px); box-shadow: 0 18px 42px rgba(55, 44, 22, 0.18); }
+    .node .id { font-weight: 700; color: var(--accent); font-size: 13px; letter-spacing: 0.04em; }
+    .node .title { margin-top: 8px; font-size: 16px; font-weight: 700; line-height: 1.25; }
+    .node .meta { margin-top: 8px; color: var(--muted); font-size: 12px; }
+    .node.active { border-color: var(--accent-2); box-shadow: 0 0 0 3px rgba(224, 120, 54, 0.18), var(--shadow); }
+    .node.ancestor, .node.descendant { border-color: var(--accent); }
+    .node.dim { opacity: 0.32; }
+    .node.search-hit { box-shadow: 0 0 0 3px rgba(31, 122, 104, 0.18), var(--shadow); }
+    .edge { stroke: rgba(31, 122, 104, 0.28); stroke-width: 2.2; fill: none; }
+    .edge.hot { stroke: var(--accent-2); stroke-width: 3.5; }
+    .detail {
+      padding: 24px;
+      overflow: auto;
+    }
+    .detail h2 { margin: 0 0 6px; font-size: 31px; letter-spacing: -0.04em; }
+    .detail .meta-line { color: var(--muted); font-family: "Trebuchet MS", sans-serif; font-size: 13px; }
+    .section { margin-top: 22px; }
+    .section h3 { margin: 0 0 8px; font-size: 15px; font-family: "Trebuchet MS", sans-serif; color: var(--accent); text-transform: uppercase; letter-spacing: 0.08em; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip { border-radius: 999px; padding: 5px 9px; background: rgba(31, 122, 104, 0.10); color: #25584f; font-family: "Trebuchet MS", sans-serif; font-size: 12px; }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      padding: 14px;
+      border-radius: 16px;
+      background: rgba(35, 29, 18, 0.06);
+      border: 1px solid rgba(99, 82, 52, 0.12);
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+    .context-menu {
+      position: fixed;
+      display: none;
+      z-index: 20;
+      width: 280px;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: #fffaf0;
+      box-shadow: var(--shadow);
+      font-family: "Trebuchet MS", sans-serif;
+    }
+    .context-menu button {
+      display: block;
+      width: 100%;
+      margin: 2px 0;
+      text-align: left;
+      border-radius: 12px;
+      border: 0;
+      background: transparent;
+    }
+    .toast {
+      position: fixed;
+      left: 50%;
+      bottom: 24px;
+      transform: translateX(-50%);
+      display: none;
+      padding: 10px 14px;
+      border-radius: 999px;
+      background: #18201b;
+      color: white;
+      font-family: "Trebuchet MS", sans-serif;
+      box-shadow: var(--shadow);
+      z-index: 30;
+    }
+    @media (max-width: 980px) {
+      main { grid-template-columns: 1fr; }
+      .detail { min-height: 360px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ExpLine Experiment Lineage</h1>
+    <div class="subtitle">Project: __PROJECT_ROOT__ · Generated: __GENERATED_AT__</div>
+  </header>
+  <div class="toolbar">
+    <input id="search" placeholder="Search ID, title, summary, change types, files, commit...">
+    <button id="reset">Reset highlight</button>
+    <button id="fit">Fit graph</button>
+  </div>
+  <main>
+    <section class="graph-wrap">
+      <svg id="edges"></svg>
+      <div id="graph" class="graph"></div>
+    </section>
+    <aside id="detail" class="detail"></aside>
+  </main>
+  <div id="menu" class="context-menu"></div>
+  <div id="toast" class="toast"></div>
+  <script id="expline-data" type="application/json">__EXPLINE_DATA__</script>
+  <script>
+    const data = JSON.parse(document.getElementById('expline-data').textContent);
+    const experiments = data.experiments || [];
+    const byId = new Map(experiments.map(item => [item.experiment_id, item]));
+    const children = new Map();
+    for (const item of experiments) {
+      if (!children.has(item.parent_id || '__root__')) children.set(item.parent_id || '__root__', []);
+      children.get(item.parent_id || '__root__').push(item.experiment_id);
+    }
+    const graph = document.getElementById('graph');
+    const svg = document.getElementById('edges');
+    const detail = document.getElementById('detail');
+    const menu = document.getElementById('menu');
+    const toast = document.getElementById('toast');
+    let activeId = experiments[0]?.experiment_id || null;
+
+    function depthOf(id, seen = new Set()) {
+      const item = byId.get(id);
+      if (!item || !item.parent_id || seen.has(id) || !byId.has(item.parent_id)) return 0;
+      seen.add(id);
+      return depthOf(item.parent_id, seen) + 1;
+    }
+
+    function layout() {
+      graph.innerHTML = '';
+      const levels = new Map();
+      for (const item of experiments) {
+        const depth = depthOf(item.experiment_id);
+        if (!levels.has(depth)) levels.set(depth, []);
+        levels.get(depth).push(item);
+      }
+      const columnWidth = 310;
+      const rowHeight = 168;
+      const maxDepth = Math.max(0, ...Array.from(levels.keys()));
+      let maxRows = 1;
+      for (const [depth, items] of levels) {
+        items.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)) || a.experiment_id.localeCompare(b.experiment_id));
+        maxRows = Math.max(maxRows, items.length);
+        items.forEach((item, row) => {
+          const node = document.createElement('div');
+          node.className = 'node';
+          node.dataset.id = item.experiment_id;
+          node.style.left = `${38 + depth * columnWidth}px`;
+          node.style.top = `${38 + row * rowHeight}px`;
+          node.innerHTML = `<div class="id">${escapeHtml(item.experiment_id)}</div><div class="title">${escapeHtml(item.title || item.summary || '')}</div><div class="meta">${escapeHtml(item.git_branch || '-')} · ${escapeHtml(shortCommit(item.git_commit))}</div>`;
+          node.addEventListener('click', () => selectNode(item.experiment_id));
+          node.addEventListener('contextmenu', event => openMenu(event, item));
+          graph.appendChild(node);
+        });
+      }
+      graph.style.width = `${Math.max(760, 110 + (maxDepth + 1) * columnWidth)}px`;
+      graph.style.height = `${Math.max(560, 110 + maxRows * rowHeight)}px`;
+      requestAnimationFrame(drawEdges);
+    }
+
+    function drawEdges() {
+      const bounds = graph.getBoundingClientRect();
+      svg.setAttribute('viewBox', `0 0 ${graph.scrollWidth} ${graph.scrollHeight}`);
+      svg.style.width = `${graph.scrollWidth}px`;
+      svg.style.height = `${graph.scrollHeight}px`;
+      svg.innerHTML = '';
+      for (const edge of data.edges || []) {
+        const source = document.querySelector(`.node[data-id="${cssEscape(edge.source)}"]`);
+        const target = document.querySelector(`.node[data-id="${cssEscape(edge.target)}"]`);
+        if (!source || !target) continue;
+        const a = source.getBoundingClientRect();
+        const b = target.getBoundingClientRect();
+        const x1 = a.right - bounds.left + graph.scrollLeft;
+        const y1 = a.top + a.height / 2 - bounds.top + graph.scrollTop;
+        const x2 = b.left - bounds.left + graph.scrollLeft;
+        const y2 = b.top + b.height / 2 - bounds.top + graph.scrollTop;
+        const mid = Math.max(40, (x2 - x1) / 2);
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.setAttribute('d', `M ${x1} ${y1} C ${x1 + mid} ${y1}, ${x2 - mid} ${y2}, ${x2} ${y2}`);
+        path.setAttribute('class', `edge edge-${edge.source}-${edge.target}`);
+        path.dataset.source = edge.source;
+        path.dataset.target = edge.target;
+        svg.appendChild(path);
+      }
+      highlight(activeId);
+    }
+
+    function selectNode(id) {
+      activeId = id;
+      renderDetail(byId.get(id));
+      highlight(id);
+    }
+
+    function collectAncestors(id) {
+      const out = new Set();
+      let cursor = byId.get(id)?.parent_id;
+      while (cursor && byId.has(cursor) && !out.has(cursor)) {
+        out.add(cursor);
+        cursor = byId.get(cursor).parent_id;
+      }
+      return out;
+    }
+
+    function collectDescendants(id) {
+      const out = new Set();
+      const stack = [...(children.get(id) || [])];
+      while (stack.length) {
+        const current = stack.pop();
+        if (!current || out.has(current)) continue;
+        out.add(current);
+        stack.push(...(children.get(current) || []));
+      }
+      return out;
+    }
+
+    function highlight(id) {
+      const ancestors = collectAncestors(id);
+      const descendants = collectDescendants(id);
+      document.querySelectorAll('.node').forEach(node => {
+        const nodeId = node.dataset.id;
+        node.classList.toggle('active', nodeId === id);
+        node.classList.toggle('ancestor', ancestors.has(nodeId));
+        node.classList.toggle('descendant', descendants.has(nodeId));
+        node.classList.toggle('dim', id && nodeId !== id && !ancestors.has(nodeId) && !descendants.has(nodeId));
+      });
+      document.querySelectorAll('.edge').forEach(edge => {
+        const hot = (edge.dataset.target === id && ancestors.has(edge.dataset.source)) ||
+          (descendants.has(edge.dataset.target) && (edge.dataset.source === id || descendants.has(edge.dataset.source) || edge.dataset.source === id));
+        edge.classList.toggle('hot', hot);
+      });
+    }
+
+    function renderDetail(item) {
+      if (!item) {
+        detail.innerHTML = '<h2>No experiments yet</h2><p class="meta-line">Run <code>expline run -- &lt;command&gt;</code> to create the first node.</p>';
+        return;
+      }
+      detail.innerHTML = `
+        <h2>${escapeHtml(item.experiment_id)}</h2>
+        <div class="meta-line">${escapeHtml(item.title || '')}</div>
+        <div class="section"><h3>Summary</h3><p>${escapeHtml(item.summary || '')}</p></div>
+        <div class="section"><h3>Metadata</h3><pre>${escapeHtml(metadataText(item))}</pre></div>
+        <div class="section"><h3>Command</h3><pre>${escapeHtml(item.command || '')}</pre></div>
+        <div class="section"><h3>Change Types</h3><div class="chips">${chips(item.change_types)}</div></div>
+        <div class="section"><h3>Affected Files</h3><pre>${escapeHtml((item.affected_files || []).join('\n'))}</pre></div>
+        <div class="section"><h3>Semantic Diff From Parent</h3><pre>${escapeHtml(`Before: ${item.semantic_before || ''}\n\nAfter: ${item.semantic_after || ''}`)}</pre></div>
+        <div class="section"><h3>Record.md</h3><pre>${escapeHtml(item.record_md || '')}</pre></div>
+        <div class="section"><h3>Changed Files Evidence</h3><pre>${escapeHtml(item.changed_files_text || '')}</pre></div>
+        <div class="section"><h3>Diff Preview</h3><pre>${escapeHtml(item.diff_preview || '')}</pre></div>
+        <div class="section"><h3>Paths</h3><pre>${escapeHtml(Object.entries(item.paths || {}).map(([key, value]) => `${key}: ${value}`).join('\n'))}</pre></div>
+      `;
+    }
+
+    function metadataText(item) {
+      return [
+        `Parent: ${item.parent_id || 'None'}`,
+        `Created: ${item.created_at || '-'}`,
+        `Git branch: ${item.git_branch || '-'}`,
+        `Git commit: ${item.git_commit || '-'}`,
+        `Git dirty: ${item.git_dirty}`,
+      ].join('\n');
+    }
+
+    function chips(values) {
+      return (values || []).map(value => `<span class="chip">${escapeHtml(String(value))}</span>`).join('') || '<span class="chip">None</span>';
+    }
+
+    function openMenu(event, item) {
+      event.preventDefault();
+      const paths = item.paths || {};
+      const actions = [
+        ['Copy experiment ID', item.experiment_id],
+        ['Copy experiment directory', paths.experiment_dir],
+        ['Copy record.md path', paths.record_md],
+        ['Copy diff.patch path', paths.diff_patch],
+        ['Copy command.txt path', paths.command_txt],
+        ['Copy VS Code open directory command', `code "${paths.experiment_dir || ''}"`],
+        ['Copy VS Code open record command', `code "${paths.record_md || ''}"`],
+      ];
+      menu.innerHTML = actions.map(([label, value]) => `<button data-copy="${escapeHtml(value || '')}">${escapeHtml(label)}</button>`).join('');
+      menu.style.display = 'block';
+      menu.style.left = `${event.clientX}px`;
+      menu.style.top = `${event.clientY}px`;
+      menu.querySelectorAll('button').forEach(button => button.addEventListener('click', () => copyText(button.dataset.copy || '')));
+    }
+
+    async function copyText(text) {
+      try {
+        await navigator.clipboard.writeText(text);
+        showToast('Copied');
+      } catch {
+        showToast('Copy failed; select the text from details instead');
+      }
+      menu.style.display = 'none';
+    }
+
+    function showToast(message) {
+      toast.textContent = message;
+      toast.style.display = 'block';
+      setTimeout(() => { toast.style.display = 'none'; }, 1300);
+    }
+
+    function search(query) {
+      const q = query.trim().toLowerCase();
+      document.querySelectorAll('.node').forEach(node => node.classList.remove('search-hit', 'dim'));
+      if (!q) {
+        highlight(activeId);
+        return;
+      }
+      const hits = new Set();
+      for (const item of experiments) {
+        const haystack = [
+          item.experiment_id, item.title, item.summary, item.git_commit,
+          ...(item.change_types || []), ...(item.affected_files || [])
+        ].join(' ').toLowerCase();
+        if (haystack.includes(q)) hits.add(item.experiment_id);
+      }
+      document.querySelectorAll('.node').forEach(node => {
+        const hit = hits.has(node.dataset.id);
+        node.classList.toggle('search-hit', hit);
+        node.classList.toggle('dim', !hit);
+      });
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+    }
+    function cssEscape(value) {
+      if (window.CSS && CSS.escape) return CSS.escape(value);
+      return String(value).replace(/["\\]/g, '\\$&');
+    }
+    function shortCommit(value) {
+      return value ? String(value).slice(0, 7) : '-';
+    }
+
+    document.getElementById('search').addEventListener('input', event => search(event.target.value));
+    document.getElementById('reset').addEventListener('click', () => { document.getElementById('search').value = ''; selectNode(activeId); });
+    document.getElementById('fit').addEventListener('click', () => { graph.scrollTo({left: 0, top: 0, behavior: 'smooth'}); });
+    document.addEventListener('click', () => { menu.style.display = 'none'; });
+    window.addEventListener('resize', drawEdges);
+    graph.addEventListener('scroll', drawEdges);
+
+    layout();
+    renderDetail(byId.get(activeId));
+    if (activeId) highlight(activeId);
+  </script>
+</body>
+</html>
+"""
 
 
 def build_list_experiment_rows(root: Path, index: dict[str, Any]) -> list[dict[str, Any]]:
