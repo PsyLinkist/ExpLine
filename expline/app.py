@@ -1604,9 +1604,9 @@ def print_experiment_table(experiments: list[dict[str, Any]]) -> None:
             str(item.get("experiment_id") or ""),
             format_list_datetime(item.get("created_at")),
             str(item.get("parent_id") or "-"),
-            truncate_text(str(item.get("git_branch") or "-"), 18),
+            truncate_table_text(str(item.get("git_branch") or "-"), 18),
             short_commit(item.get("git_commit")),
-            truncate_text(str(item.get("title") or item.get("summary") or ""), 54),
+            truncate_table_text(str(item.get("title") or item.get("summary") or ""), 54),
         ]
         for item in experiments
     ]
@@ -1628,7 +1628,7 @@ def format_list_datetime(value: Any) -> str:
     try:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
-        return truncate_text(text, 16)
+        return truncate_table_text(text, 16)
     return parsed.strftime("%Y-%m-%d %H:%M")
 
 
@@ -1639,7 +1639,7 @@ def short_commit(value: Any) -> str:
     return text[:7]
 
 
-def truncate_text(text: str, max_chars: int) -> str:
+def truncate_table_text(text: str, max_chars: int) -> str:
     compact = " ".join(text.split())
     if len(compact) <= max_chars:
         return compact
