@@ -1771,15 +1771,24 @@ SITE_HTML_TEMPLATE = r"""<!doctype html>
       box-shadow: var(--shadow);
       overflow: hidden;
     }
+    .graph-wrap {
+      overflow: auto;
+      cursor: grab;
+      user-select: none;
+    }
+    .graph-wrap.dragging {
+      cursor: grabbing;
+    }
     .graph {
       position: relative;
       min-height: 620px;
-      overflow: auto;
-      padding: 38px;
+      min-width: 100%;
+      overflow: visible;
     }
     #edges {
       position: absolute;
-      inset: 0;
+      left: 0;
+      top: 0;
       width: 100%;
       height: 100%;
       pointer-events: none;
@@ -1821,6 +1830,8 @@ SITE_HTML_TEMPLATE = r"""<!doctype html>
     pre {
       white-space: pre-wrap;
       word-break: break-word;
+      max-height: 260px;
+      overflow: auto;
       padding: 14px;
       border-radius: 16px;
       background: rgba(35, 29, 18, 0.06);
@@ -1828,6 +1839,14 @@ SITE_HTML_TEMPLATE = r"""<!doctype html>
       font-family: "Cascadia Code", Consolas, monospace;
       font-size: 12px;
       line-height: 1.55;
+    }
+    pre.diff-preview {
+      max-height: 420px;
+      white-space: pre;
+      overflow: auto;
+    }
+    pre.record-preview {
+      max-height: 360px;
     }
     .context-menu {
       position: fixed;
@@ -1882,8 +1901,9 @@ SITE_HTML_TEMPLATE = r"""<!doctype html>
   </div>
   <main>
     <section class="graph-wrap">
-      <svg id="edges"></svg>
-      <div id="graph" class="graph"></div>
+      <div id="graph" class="graph">
+        <svg id="edges"></svg>
+      </div>
     </section>
     <aside id="detail" class="detail"></aside>
   </main>
@@ -1900,11 +1920,13 @@ SITE_HTML_TEMPLATE = r"""<!doctype html>
       children.get(item.parent_id || '__root__').push(item.experiment_id);
     }
     const graph = document.getElementById('graph');
-    const svg = document.getElementById('edges');
+    const graphWrap = document.querySelector('.graph-wrap');
+    let svg = document.getElementById('edges');
     const detail = document.getElementById('detail');
     const menu = document.getElementById('menu');
     const toast = document.getElementById('toast');
     let activeId = experiments[0]?.experiment_id || null;
+    let dragState = null;
 
     function depthOf(id, seen = new Set()) {
       const item = byId.get(id);
@@ -1914,7 +1936,8 @@ SITE_HTML_TEMPLATE = r"""<!doctype html>
     }
 
     function layout() {
-      graph.innerHTML = '';
+      graph.innerHTML = '<svg id="edges"></svg>';
+      svg = document.getElementById('edges');
       const levels = new Map();
       for (const item of experiments) {
         const depth = depthOf(item.experiment_id);
@@ -1925,6 +1948,8 @@ SITE_HTML_TEMPLATE = r"""<!doctype html>
       const rowHeight = 168;
       const maxDepth = Math.max(0, ...Array.from(levels.keys()));
       let maxRows = 1;
+      let maxRight = 760;
+      let maxBottom = 560;
       for (const [depth, items] of levels) {
         items.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)) || a.experiment_id.localeCompare(b.experiment_id));
         maxRows = Math.max(maxRows, items.length);
@@ -1934,33 +1959,34 @@ SITE_HTML_TEMPLATE = r"""<!doctype html>
           node.dataset.id = item.experiment_id;
           node.style.left = `${38 + depth * columnWidth}px`;
           node.style.top = `${38 + row * rowHeight}px`;
+          maxRight = Math.max(maxRight, 38 + depth * columnWidth + 250);
+          maxBottom = Math.max(maxBottom, 38 + row * rowHeight + 140);
           node.innerHTML = `<div class="id">${escapeHtml(item.experiment_id)}</div><div class="title">${escapeHtml(item.title || item.summary || '')}</div><div class="meta">${escapeHtml(item.git_branch || '-')} · ${escapeHtml(shortCommit(item.git_commit))}</div>`;
           node.addEventListener('click', () => selectNode(item.experiment_id));
           node.addEventListener('contextmenu', event => openMenu(event, item));
           graph.appendChild(node);
         });
       }
-      graph.style.width = `${Math.max(760, 110 + (maxDepth + 1) * columnWidth)}px`;
-      graph.style.height = `${Math.max(560, 110 + maxRows * rowHeight)}px`;
+      graph.style.width = `${Math.max(960, maxRight + 220, 110 + (maxDepth + 1) * columnWidth)}px`;
+      graph.style.height = `${Math.max(620, maxBottom + 180, 110 + maxRows * rowHeight)}px`;
       requestAnimationFrame(drawEdges);
     }
 
     function drawEdges() {
-      const bounds = graph.getBoundingClientRect();
-      svg.setAttribute('viewBox', `0 0 ${graph.scrollWidth} ${graph.scrollHeight}`);
-      svg.style.width = `${graph.scrollWidth}px`;
-      svg.style.height = `${graph.scrollHeight}px`;
+      const graphWidth = graph.offsetWidth;
+      const graphHeight = graph.offsetHeight;
+      svg.setAttribute('viewBox', `0 0 ${graphWidth} ${graphHeight}`);
+      svg.style.width = `${graphWidth}px`;
+      svg.style.height = `${graphHeight}px`;
       svg.innerHTML = '';
       for (const edge of data.edges || []) {
         const source = document.querySelector(`.node[data-id="${cssEscape(edge.source)}"]`);
         const target = document.querySelector(`.node[data-id="${cssEscape(edge.target)}"]`);
         if (!source || !target) continue;
-        const a = source.getBoundingClientRect();
-        const b = target.getBoundingClientRect();
-        const x1 = a.right - bounds.left + graph.scrollLeft;
-        const y1 = a.top + a.height / 2 - bounds.top + graph.scrollTop;
-        const x2 = b.left - bounds.left + graph.scrollLeft;
-        const y2 = b.top + b.height / 2 - bounds.top + graph.scrollTop;
+        const x1 = source.offsetLeft + source.offsetWidth;
+        const y1 = source.offsetTop + source.offsetHeight / 2;
+        const x2 = target.offsetLeft;
+        const y2 = target.offsetTop + target.offsetHeight / 2;
         const mid = Math.max(40, (x2 - x1) / 2);
         const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
         path.setAttribute('d', `M ${x1} ${y1} C ${x1 + mid} ${y1}, ${x2 - mid} ${y2}, ${x2} ${y2}`);
@@ -2031,9 +2057,9 @@ SITE_HTML_TEMPLATE = r"""<!doctype html>
         <div class="section"><h3>Change Types</h3><div class="chips">${chips(item.change_types)}</div></div>
         <div class="section"><h3>Affected Files</h3><pre>${escapeHtml((item.affected_files || []).join('\n'))}</pre></div>
         <div class="section"><h3>Semantic Diff From Parent</h3><pre>${escapeHtml(`Before: ${item.semantic_before || ''}\n\nAfter: ${item.semantic_after || ''}`)}</pre></div>
-        <div class="section"><h3>Record.md</h3><pre>${escapeHtml(item.record_md || '')}</pre></div>
+        <div class="section"><h3>Record.md</h3><pre class="record-preview">${escapeHtml(item.record_md || '')}</pre></div>
         <div class="section"><h3>Changed Files Evidence</h3><pre>${escapeHtml(item.changed_files_text || '')}</pre></div>
-        <div class="section"><h3>Diff Preview</h3><pre>${escapeHtml(item.diff_preview || '')}</pre></div>
+        <div class="section"><h3>Diff Preview</h3><pre class="diff-preview">${escapeHtml(item.diff_preview || '')}</pre></div>
         <div class="section"><h3>Paths</h3><pre>${escapeHtml(Object.entries(item.paths || {}).map(([key, value]) => `${key}: ${value}`).join('\n'))}</pre></div>
       `;
     }
@@ -2122,10 +2148,36 @@ SITE_HTML_TEMPLATE = r"""<!doctype html>
 
     document.getElementById('search').addEventListener('input', event => search(event.target.value));
     document.getElementById('reset').addEventListener('click', () => { document.getElementById('search').value = ''; selectNode(activeId); });
-    document.getElementById('fit').addEventListener('click', () => { graph.scrollTo({left: 0, top: 0, behavior: 'smooth'}); });
+    document.getElementById('fit').addEventListener('click', () => { graphWrap.scrollTo({left: 0, top: 0, behavior: 'smooth'}); });
     document.addEventListener('click', () => { menu.style.display = 'none'; });
     window.addEventListener('resize', drawEdges);
-    graph.addEventListener('scroll', drawEdges);
+    graphWrap.addEventListener('scroll', drawEdges);
+    graphWrap.addEventListener('pointerdown', event => {
+      if (event.button !== 0 || event.target.closest('.node')) return;
+      dragState = {
+        pointerId: event.pointerId,
+        x: event.clientX,
+        y: event.clientY,
+        left: graphWrap.scrollLeft,
+        top: graphWrap.scrollTop,
+      };
+      graphWrap.classList.add('dragging');
+      graphWrap.setPointerCapture(event.pointerId);
+    });
+    graphWrap.addEventListener('pointermove', event => {
+      if (!dragState) return;
+      graphWrap.scrollLeft = dragState.left - (event.clientX - dragState.x);
+      graphWrap.scrollTop = dragState.top - (event.clientY - dragState.y);
+    });
+    graphWrap.addEventListener('pointerup', endDrag);
+    graphWrap.addEventListener('pointercancel', endDrag);
+
+    function endDrag() {
+      if (!dragState) return;
+      try { graphWrap.releasePointerCapture(dragState.pointerId); } catch {}
+      dragState = null;
+      graphWrap.classList.remove('dragging');
+    }
 
     layout();
     renderDetail(byId.get(activeId));
