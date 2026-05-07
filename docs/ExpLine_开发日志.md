@@ -55,3 +55,16 @@
 2. 调整结果产物 Prompt 说明，明确 `--result-path` 只作为保存产物证据，不用于解释指标变化原因或判断实验好坏。
 3. 新增 `expline rebuild`，可以从 `.expline/experiments/*/record.json` 重建 `.expline/index.json`，并报告重复实验 ID、缺失父实验和损坏记录等链路问题。
 4. 新增 `expline list`，可以按时间倒序查看实验列表，并支持 `--limit`、`--branch`、`--parent` 过滤。
+
+## 2026-05-06
+
+1. 新增 `expline site`，可以生成 `.expline/site/index.html` 单文件静态实验谱系页面。
+2. 静态页面内嵌实验链路、实验摘要和 `record.md` 内容，支持点击节点查看详情、搜索节点、高亮父子链路和右键复制路径。
+3. `expline init`、`expline run`、`expline rebuild` 后会自动刷新静态页面。
+4. README 增加远程服务器通过 `python -m http.server --bind 127.0.0.1` 和 VS Code Remote 端口转发查看静态页面的说明。
+5. 修复 `expline list` 引入的截断函数重名问题，避免 `expline run` 在收集 Git diff 时崩溃。
+
+## 2026-05-07
+
+1. 优化静态页面交互：详情区中的 `record.md` 和 `Diff Preview` 改为内部滚动，避免长内容撑开整个页面。
+2. 优化实验谱系图浏览：左侧图区域支持滚轮滚动和空白处拖拽平移，便于查看右侧或较远的实验节点。
