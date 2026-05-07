@@ -22,6 +22,14 @@ ExpLine 适合频繁修改代码并运行实验的科研人员、算法工程师
 8. 可选记录实验结果文件或目录摘要。
 9. 持久化设置实验报告语言。
 
+## 演示
+
+### 可视化实验谱系
+
+![ExpLine 实验谱系页面](https://raw.githubusercontent.com/PsyLinkist/LearningBlogPics/main/20260507212419283.png)
+
+![ExpLine 实验详情与 Diff Preview](https://raw.githubusercontent.com/PsyLinkist/LearningBlogPics/main/20260507212538219.png)
+
 ## 安装
 
 从 GitHub 安装：
