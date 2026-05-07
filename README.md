@@ -219,8 +219,9 @@ expline site
 远程服务器推荐这样查看：
 
 ```bash
-cd .expline/site
-python -m http.server 8765 --bind 127.0.0.1
+expline site
+ls -lh .expline/site/index.html
+python -m http.server 8765 --bind 127.0.0.1 --directory .expline/site
 ```
 
 然后在 VS Code Remote 的 Ports 面板转发 `8765` 端口，并在本地浏览器打开：
