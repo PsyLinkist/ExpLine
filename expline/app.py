@@ -4,6 +4,7 @@ import argparse
 import html as html_lib
 import json
 import os
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -260,6 +261,10 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser.add_argument("--parent", dest="parent_id", help="Only show direct children of this parent experiment")
     list_parser.set_defaults(func=cmd_list)
 
+    undo_parser = subparsers.add_parser("undo", help="Delete the most recent experiment record")
+    undo_parser.add_argument("-y", "--yes", action="store_true", help="Actually delete the latest experiment; without this, only preview")
+    undo_parser.set_defaults(func=cmd_undo)
+
     site_parser = subparsers.add_parser("site", help="Generate the static experiment lineage HTML page")
     site_parser.set_defaults(func=cmd_site)
 
@@ -433,6 +438,60 @@ def cmd_list(args: argparse.Namespace) -> int:
         return 0
 
     print_experiment_table(experiments)
+    return 0
+
+
+def cmd_undo(args: argparse.Namespace) -> int:
+    root = Path.cwd()
+    assert_initialized(root)
+    latest, warnings = find_latest_experiment_record(root)
+    if latest is None:
+        print("No experiment records found.")
+        return 0
+
+    experiment_id, experiment_dir, record = latest
+    children = find_child_experiments(root, experiment_id)
+    if children:
+        child_list = ", ".join(children)
+        raise SystemExit(f"Cannot undo {experiment_id}; it has child experiment(s): {child_list}.")
+
+    command = str(record.get("command") or "").strip()
+    exit_code = record.get("command_exit_code")
+    print(f"Latest experiment: {experiment_id}")
+    print(f"Directory: {experiment_dir}")
+    if command:
+        print(f"Command: {command}")
+    if exit_code is not None:
+        print(f"Command exit code: {exit_code}")
+
+    if warnings:
+        print("Warnings:")
+        for warning in warnings:
+            print(f"- {warning}")
+
+    if not args.yes:
+        print("Dry run only. Re-run with: expline undo --yes")
+        return 0
+
+    experiments_root = experiments_path(root).resolve()
+    resolved_dir = experiment_dir.resolve()
+    try:
+        resolved_dir.relative_to(experiments_root)
+    except ValueError:
+        raise SystemExit(f"Refusing to delete path outside experiments directory: {experiment_dir}")
+    if not resolved_dir.name.startswith(EXPERIMENT_PREFIX):
+        raise SystemExit(f"Refusing to delete non-experiment directory: {experiment_dir}")
+
+    remove_experiment_dir(resolved_dir)
+    rebuilt_index, rebuild_warnings = rebuild_index_from_records(root)
+    save_index(root, rebuilt_index)
+    refresh_site(root, rebuilt_index)
+    print(f"Deleted experiment {experiment_id}.")
+    print(f"Next experiment ID: {EXPERIMENT_PREFIX}{rebuilt_index['next_id']:04d}")
+    if rebuild_warnings:
+        print("Warnings:")
+        for warning in rebuild_warnings:
+            print(f"- {warning}")
     return 0
 
 
@@ -2204,6 +2263,51 @@ def build_list_experiment_rows(root: Path, index: dict[str, Any]) -> list[dict[s
                     merged[key] = record.get(key)
         rows.append(merged)
     return rows
+
+
+def find_latest_experiment_record(root: Path) -> tuple[tuple[str, Path, dict[str, Any]] | None, list[str]]:
+    records: list[tuple[tuple[str, int, str], str, Path, dict[str, Any]]] = []
+    warnings: list[str] = []
+    for record_path in sorted(experiments_path(root).glob(f"{EXPERIMENT_PREFIX}*/record.json")):
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            warnings.append(f"Could not read {record_path}: {exc}")
+            continue
+        experiment_id = str(record.get("experiment_id") or record_path.parent.name)
+        key = (
+            str(record.get("created_at") or ""),
+            parse_experiment_number(experiment_id),
+            experiment_id,
+        )
+        records.append((key, experiment_id, record_path.parent, record))
+    if not records:
+        return None, warnings
+    _, experiment_id, experiment_dir, record = max(records, key=lambda item: item[0])
+    return (experiment_id, experiment_dir, record), warnings
+
+
+def find_child_experiments(root: Path, parent_id: str) -> list[str]:
+    children: list[str] = []
+    for record_path in sorted(experiments_path(root).glob(f"{EXPERIMENT_PREFIX}*/record.json")):
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if record.get("parent_id") == parent_id:
+            children.append(str(record.get("experiment_id") or record_path.parent.name))
+    return children
+
+
+def remove_experiment_dir(path: Path) -> None:
+    def retry_after_chmod(function: Any, failed_path: str, exc_info: Any) -> None:
+        try:
+            os.chmod(failed_path, 0o700)
+            function(failed_path)
+        except OSError:
+            raise exc_info[1]
+
+    shutil.rmtree(path, onerror=retry_after_chmod)
 
 
 def load_experiment_record(root: Path, experiment_id: str) -> dict[str, Any] | None:

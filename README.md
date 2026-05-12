@@ -208,6 +208,22 @@ expline list --parent EXP-0001
 
 默认输出包含实验 ID、创建时间、父实验、Git 分支、Git commit 短哈希和标题，适合快速确认最近跑过哪些实验以及它们所在的实验线。
 
+### 回退最近一次实验记录
+
+如果最近一次实验命令失败，或者想重新修改命令再跑，可以先预览将要删除的记录：
+
+```bash
+expline undo
+```
+
+确认无误后删除最近一次实验记录：
+
+```bash
+expline undo --yes
+```
+
+`undo` 只删除 `.expline/experiments/` 中最近一次实验目录，并自动重建 `.expline/index.json`、刷新静态谱系页面。如果最近一次实验已经有子实验，ExpLine 会拒绝删除，避免留下断开的实验链路。
+
 ### 生成实验谱系页面
 
 ```bash
