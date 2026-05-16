@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from expline import __version__
 from expline.ai import AIResult, generate_structured_output
 
 
@@ -236,6 +237,7 @@ def configure_stdout() -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="expline")
+    parser.add_argument("--version", action="version", version=f"ExpLine {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     init_parser = subparsers.add_parser("init", help="Initialize ExpLine in the current project")
@@ -280,6 +282,9 @@ def build_parser() -> argparse.ArgumentParser:
     rebuild_parser = subparsers.add_parser("rebuild", help="Rebuild ExpLine index from experiment record.json files")
     rebuild_parser.set_defaults(func=cmd_rebuild)
 
+    version_parser = subparsers.add_parser("version", help="Show ExpLine version and installation details")
+    version_parser.set_defaults(func=cmd_version)
+
     config_parser = subparsers.add_parser("config", help="Read or update ExpLine project settings")
     config_subparsers = config_parser.add_subparsers(dest="config_command", required=True)
 
@@ -293,6 +298,36 @@ def build_parser() -> argparse.ArgumentParser:
     config_set_parser.set_defaults(func=cmd_config_set)
 
     return parser
+
+
+def cmd_version(args: argparse.Namespace) -> int:
+    package_path = Path(__file__).resolve()
+    print(f"ExpLine {__version__}")
+    print(f"Package: {package_path}")
+
+    git_commit = resolve_source_git_commit(package_path)
+    if git_commit:
+        print(f"Source commit: {git_commit}")
+    return 0
+
+
+def resolve_source_git_commit(path: Path) -> str | None:
+    for candidate in [path.parent, *path.parents]:
+        if not (candidate / ".git").exists():
+            continue
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(candidate), "rev-parse", "--short", "HEAD"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        except OSError:
+            return None
+        if result.returncode == 0:
+            return result.stdout.strip() or None
+        return None
+    return None
 
 
 def cmd_init(args: argparse.Namespace) -> int:

@@ -44,6 +44,13 @@ python -m pip install git+https://github.com/PsyLinkist/ExpLine.git
 expline --help
 ```
 
+也可以查看当前安装版本和实际加载的包路径，用来确认是否已经更新到最新安装：
+
+```bash
+expline version
+expline --version
+```
+
 如果想参与开发或修改源码，可以使用可编辑安装：
 
 ```bash
@@ -87,6 +94,13 @@ expline run -- python main.py --config config.yaml
 ExpLine 会把实验记录保存在当前实验项目的 `.expline/` 目录中。
 
 ## 常用命令
+
+### 查看版本
+
+```bash
+expline version
+expline --version
+```
 
 ### 初始化项目
 

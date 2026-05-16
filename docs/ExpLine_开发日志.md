@@ -81,3 +81,4 @@
 1. 支持通过 `expline config set openai-api-key <key>` 或 `expline config set api-key <key>` 将 OpenAI API key 写入当前项目的 `.expline/config.json`。
 2. AI 调用读取 API key 时优先使用 `OPENAI_API_KEY` 环境变量，未设置时回退到配置文件中的 `openai_api_key`。
 3. README 补充显式配置 API key 的用法，并说明环境变量优先级。
+4. 新增 `expline version` 和 `expline --version`，用于查看当前安装版本、包路径和源码 commit，便于排查命令入口是否仍指向旧版本。
