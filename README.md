@@ -344,4 +344,10 @@ expline run -- python main.py
 expline config set openai-base-url https://api.key77qiqi.cn/v1
 ```
 
+也可以把 API key 写入当前项目配置；运行时环境变量 `OPENAI_API_KEY` 会优先于配置文件中的值：
+
+```bash
+expline config set openai-api-key your-api-key
+```
+
 如果没有 API Key 或 AI 调用失败，ExpLine 会自动回退到本地摘要器，保证记录流程仍然可用。

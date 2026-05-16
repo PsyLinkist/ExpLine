@@ -75,3 +75,9 @@
 1. 新增 `expline undo`，默认预览最近一次实验记录，便于确认失败或误跑的实验节点。
 2. 新增 `expline undo --yes`，删除最近一次实验目录后自动重建 `.expline/index.json` 并刷新静态谱系页面。
 3. `undo` 会拒绝删除已有子实验的节点，并限制删除目标必须位于 `.expline/experiments/EXP-*` 下，避免留下断开的实验链路或误删非实验目录。
+
+## 2026-05-16
+
+1. 支持通过 `expline config set openai-api-key <key>` 或 `expline config set api-key <key>` 将 OpenAI API key 写入当前项目的 `.expline/config.json`。
+2. AI 调用读取 API key 时优先使用 `OPENAI_API_KEY` 环境变量，未设置时回退到配置文件中的 `openai_api_key`。
+3. README 补充显式配置 API key 的用法，并说明环境变量优先级。

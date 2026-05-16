@@ -54,7 +54,7 @@ def generate_structured_output(
             raw_response=None,
         )
 
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = resolve_openai_api_key(config)
     if not api_key:
         return AIResult(
             ok=True,
@@ -63,7 +63,7 @@ def generate_structured_output(
             output=fallback_output,
             rendered_prompt=rendered_prompt,
             raw_response=None,
-            error="OPENAI_API_KEY is not set; used local fallback generator.",
+            error="OPENAI_API_KEY or openai_api_key is not set; used local fallback generator.",
         )
 
     model = str(config.get("openai_model", "gpt-5.4-mini"))
@@ -131,6 +131,11 @@ def resolve_openai_responses_url(config: dict[str, Any]) -> str:
     if base_url.rstrip("/").endswith("/responses"):
         return base_url.rstrip("/")
     return f"{base_url.rstrip('/')}/responses"
+
+
+def resolve_openai_api_key(config: dict[str, Any]) -> str:
+    api_key = os.getenv("OPENAI_API_KEY") or str(config.get("openai_api_key", ""))
+    return api_key.strip()
 
 
 def render_template(template: str, context: dict[str, str]) -> str:
